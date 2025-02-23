@@ -1,0 +1,112 @@
+model:
+  target: ddm.ddm_const.LatentDiffusion
+  params:
+    image_size: [512, 512]
+    first_stage_key: "bev_map_gt"
+    ckpt_path:
+    ignore_keys: []
+    only_model: False
+    sampling_timesteps: 10
+    loss_type: l2
+    start_dist: normal
+    perceptual_weight: 0
+    scale_factor: 0.195
+    scale_by_std: True
+    default_scale: True
+    scale_by_softsign: False
+    eps: !!float 1e-4
+    sigma_max: 1
+    sigma_min: 0.01
+    ldm: True
+    weighting_loss: True
+    use_l1: True
+    use_augment: False
+    # conditioning_key: crossattn
+
+    first_stage_config:
+      target: ldm.models.autoencoder_retrain.AutoencoderKL
+      params:
+        embed_dim: 4
+        monitor: val/rec_loss
+        ddconfig:
+          #attn_type: "vanilla-xformers"
+          double_z: true
+          z_channels: 4
+          resolution: 256
+          in_channels: 4  # 4 * 64 of stp3 output channels
+          out_ch: 4       # 4 * 64 of stp3 output channels
+          ch: 128
+          ch_mult:
+          - 1
+          - 2
+          - 4
+          - 4
+          num_res_blocks: 2
+          attn_resolutions: []
+          dropout: 0.0
+          tanh_out: True
+        lossconfig:
+          target: torch.nn.Identity
+        kl_div_weight: 0.000001
+        rec_weight: [0.1, 2.0, 1.0, 10.0]   # not used
+        semantic_layers: ['drivable_area',
+                          'lane_divider',
+                          'vehicle',
+                          'pedestrian']
+      ckpt_path: "./models/vae_epoch=5-step=76320.ckpt"
+    
+    unet_config:
+      target: unet.uncond_unet.EDMPrecond
+      params:
+        img_resolution: 64
+        img_channels: 4
+        sigma_data: 1.0  # Expected standard deviation of the training data.
+        model_type: 'DhariwalUNet'
+        model_channels: 320  # Base multiplier for the number of channels.
+        channel_mult: [ 1, 2, 4, 4 ]
+        channel_mult_emb: 4  # Multiplier for the dimensionality of the embedding vector.
+        num_blocks: 3  # Number of residual blocks per resolution.
+        attn_resolutions: [ 32, 16 ]  # List of resolutions with self-attention.
+        dropout: 0.1  # dropout.
+        label_dropout: 0
+        augment_dim: 0
+
+    trainer_cfg:
+      gradient_accumulate_every: 2
+      lr: !!float 5e-5
+      min_lr: !!float 5e-6
+      train_num_steps: 400000
+      save_and_sample_every: 10000
+      log_freq: 500
+      # results_folder: "/nfs/data/diffusion_data/DIV2K/results_ddm_const_cond_unet"
+      amp: False
+      fp16: False
+      resume_milestone: 0
+      test_before: True
+      ema_update_after_step: 40000
+      ema_update_every: 10
+
+data:
+  class_name: ddm.data.SRDataset
+  image_size: [512, 512]
+  img_folder: "/home/zc/ControlNet_stp3/data/DIV2K/DIV2K_train_HR/"
+  augment_horizontal_flip: True
+  batch_size: 16
+  num_workers: 4
+
+
+trainer:
+  gradient_accumulate_every: 2
+  lr: !!float 5e-5
+  min_lr: !!float 5e-6
+  train_num_steps: 400000
+  save_and_sample_every: 10000
+  log_freq: 500
+  results_folder: "/nfs/data/diffusion_data/DIV2K/results_ddm_const_cond_unet"
+#  results_folder: "/data/huang/cifar-10-python/results_etp_const_sde4_ncsnpp10"
+  amp: False
+  fp16: False
+  resume_milestone: 0
+  test_before: True
+  ema_update_after_step: 40000
+  ema_update_every: 10

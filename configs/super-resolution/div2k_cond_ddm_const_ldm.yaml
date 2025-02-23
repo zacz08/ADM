@@ -37,7 +37,7 @@ model:
       num_res_blocks: 2
       attn_resolutions: [ ]
       dropout: 0.0
-    ckpt_path: "/nfs/data/pretrain_weight/const-sde/div2k_first_stage.pt"
+    ckpt_path: "/home/zc/ControlNet_stp3/ADM/ckpts/model.ckpt"
   unet:
     class_name: unet.cond_unet.Unet
     fix_bb: False
@@ -60,7 +60,7 @@ model:
 data:
   class_name: ddm.data.SRDataset
   image_size: [512, 512]
-  img_folder: "/nfs/data/diffusion_data/DIV2K/DIV2K_train_HR/"
+  img_folder: "/home/zc/ControlNet_stp3/data/DIV2K/DIV2K_train_HR/"
   augment_horizontal_flip: True
   batch_size: 16
   num_workers: 4

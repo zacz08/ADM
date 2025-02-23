@@ -9,23 +9,14 @@ from einops import rearrange, reduce
 from functools import partial
 from collections import namedtuple
 from random import random, randint, sample, choice
-# from .encoder_decoder import DiagonalGaussianDistribution
-from ldm.modules.distributions.distributions import DiagonalGaussianDistribution
-
+from .encoder_decoder import DiagonalGaussianDistribution
 import random
 from taming.modules.losses.vqperceptual import *
 from .augment import AugmentPipe
 from .loss import *
 import numpy as np
-from ldm.util import instantiate_from_config
-import pytorch_lightning as pl
 
 # xt = x0 + ct + \epsilon * t.sqrt()
-
-def disabled_train(self, mode=True):
-    """Overwrite model.train with this function to make sure train/eval mode
-    does not change anymore."""
-    return self
 
 def extract(a, t, x_shape):
     b, *_ = t.shape
@@ -50,63 +41,18 @@ def cosine_beta_schedule(timesteps, s = 0.008):
     betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
     return torch.clip(betas, 0, 0.999)
 
-class DiffusionWrapper(pl.LightningModule):
-    def __init__(self, diff_model_config, conditioning_key):
-        super().__init__()
-        self.sequential_cross_attn = diff_model_config.pop("sequential_crossattn", False)
-        self.diffusion_model = instantiate_from_config(diff_model_config)
-        self.conditioning_key = conditioning_key
-        assert self.conditioning_key in [None, 'concat', 'crossattn', 'hybrid', 'adm', 'hybrid-adm', 'crossattn-adm']
-
-    def forward(self, x, t, c_concat: list = None, c_crossattn: list = None, c_adm=None):
-        if self.conditioning_key is None:
-            out = self.diffusion_model(x, t)
-        elif self.conditioning_key == 'concat':
-            xc = torch.cat([x] + c_concat, dim=1)
-            out = self.diffusion_model(xc, t)
-        elif self.conditioning_key == 'crossattn':
-            if not self.sequential_cross_attn:
-                cc = torch.cat(c_crossattn, 1)
-            else:
-                cc = c_crossattn
-            out = self.diffusion_model(x, t, context=cc)
-        elif self.conditioning_key == 'hybrid':
-            xc = torch.cat([x] + c_concat, dim=1)
-            cc = torch.cat(c_crossattn, 1)
-            out = self.diffusion_model(xc, t, context=cc)
-        elif self.conditioning_key == 'hybrid-adm':
-            assert c_adm is not None
-            xc = torch.cat([x] + c_concat, dim=1)
-            cc = torch.cat(c_crossattn, 1)
-            out = self.diffusion_model(xc, t, context=cc, y=c_adm)
-        elif self.conditioning_key == 'crossattn-adm':
-            assert c_adm is not None
-            cc = torch.cat(c_crossattn, 1)
-            out = self.diffusion_model(x, t, context=cc, y=c_adm)
-        elif self.conditioning_key == 'adm':
-            cc = c_crossattn[0]
-            out = self.diffusion_model(x, t, y=cc)
-        else:
-            raise NotImplementedError()
-
-        return out
-    
-
-class DDPM(pl.LightningModule):
+class DDPM(nn.Module):
     def __init__(
         self,
-        # model,
-        unet_config,
+        model,
         *,
         image_size,
-        conditioning_key=None,
         sampling_timesteps = None,
         loss_type = 'l2',
         objective = 'pred_noise',
         beta_schedule = 'cosine',
         clip_x_start=True,
-        first_stage_key='image',
-        reference_key=None,
+        input_keys=['image'],
         start_dist='normal',
         sample_type='deterministic',
         perceptual_weight=1.,
@@ -116,27 +62,22 @@ class DDPM(pl.LightningModule):
         ckpt_path = kwargs.pop("ckpt_path", None)
         ignore_keys = kwargs.pop("ignore_keys", [])
         only_model = kwargs.pop("only_model", False)
-        # cfg = kwargs.pop("cfg", None)
+        cfg = kwargs.pop("cfg", None)
         super().__init__()
         # assert not (type(self) == DDPM and model.channels != model.out_dim)
         # assert not model.random_or_learned_sinusoidal_cond
 
-        # self.model = model
-        # self.model = DiffusionWrapper(unet_config, conditioning_key)
-        self.model = instantiate_from_config(unet_config)
+        self.model = model
         self.channels = self.model.channels
         self.self_condition = self.model.self_condition
-        self.first_stage_key = first_stage_key
-        self.reference_key = reference_key
-        self.cfg = kwargs
-        self.opt_cfg = kwargs.get('trainer_cfg', None)
-        self.use_scheduler = self.opt_cfg is not None
+        self.input_keys = input_keys
+        self.cfg = cfg
         self.scale_input = self.cfg.get('scale_input', 1)
-        self.register_buffer('eps', torch.tensor(self.cfg.get('eps', 1e-4) if self.cfg is not None else 1e-4))
-        self.sigma_min = self.cfg.get('sigma_min', 1e-2) if self.cfg is not None else 1e-2
-        self.sigma_max = self.cfg.get('sigma_max', 1) if self.cfg is not None else 1
+        self.register_buffer('eps', torch.tensor(cfg.get('eps', 1e-4) if cfg is not None else 1e-4))
+        self.sigma_min = cfg.get('sigma_min', 1e-2) if cfg is not None else 1e-2
+        self.sigma_max = cfg.get('sigma_max', 1) if cfg is not None else 1
         print('### sigma_min: {}, sigma_max: {} ###\n'.format(self.sigma_min, self.sigma_max))
-        self.weighting_loss = self.cfg.get("weighting_loss", False) if self.cfg is not None else False
+        self.weighting_loss = cfg.get("weighting_loss", False) if cfg is not None else False
         if self.weighting_loss:
             print('#### WEIGHTING LOSS ####')
 
@@ -159,8 +100,8 @@ class DDPM(pl.LightningModule):
 
         loss_main_cfg_default = {'class_name': 'ddm.loss.MSE_Loss'}
         loss_vlb_cfg_default = {'class_name': 'ddm.loss.MAE_Loss'}
-        loss_main_cfg = self.cfg.get('loss_main', loss_main_cfg_default)
-        loss_vlb_cfg = self.cfg.get('loss_vlb', loss_vlb_cfg_default)
+        loss_main_cfg = cfg.get('loss_main', loss_main_cfg_default)
+        loss_vlb_cfg = cfg.get('loss_vlb', loss_vlb_cfg_default)
         self.loss_main_func = construct_class_by_name(**loss_main_cfg)
         self.loss_vlb_func = construct_class_by_name(**loss_vlb_cfg)
         self.use_l1 = use_l1
@@ -177,7 +118,6 @@ class DDPM(pl.LightningModule):
 
         if ckpt_path is not None:
             self.init_from_ckpt(ckpt_path, ignore_keys, only_model)
-            print(">>> Loaded model from checkpoint:", ckpt_path)
 
     def init_from_ckpt(self, path, ignore_keys=list(), only_model=False, use_ema=False):
         sd = torch.load(path, map_location="cpu")
@@ -209,31 +149,18 @@ class DDPM(pl.LightningModule):
             print(f"Unexpected Keys: {unexpected}")
 
 
-    # def get_input(self, batch, return_first_stage_outputs=False, return_original_cond=False):
-    #     assert 'image' in self.input_keys;
-    #     if len(self.input_keys) > len(batch.keys()):
-    #         x, *_ = batch.values()
-    #     else:
-    #         x = batch.values()
-    #     return x
-    
-    def get_input(self, batch, k):
-        x = batch[k]
-        if len(x.shape) == 3:
-            x = x[..., None]
-        x = rearrange(x, 'b h w c -> b c h w')
-        x = x.to(memory_format=torch.contiguous_format).float()
+    def get_input(self, batch, return_first_stage_outputs=False, return_original_cond=False):
+        assert 'image' in self.input_keys;
+        if len(self.input_keys) > len(batch.keys()):
+            x, *_ = batch.values()
+        else:
+            x = batch.values()
         return x
 
     def training_step(self, batch, **kwargs):
-        z, *_ = self.get_input(self.first_stage_key)
+        z, *_ = self.get_input(batch)
         cond = batch['cond'] if 'cond' in batch else None
         loss, loss_dict = self(z, cond, **kwargs)
-        return loss, loss_dict
-    
-    def shared_step(self, batch):
-        x = self.get_input(batch, self.first_stage_key)
-        loss, loss_dict = self(x)
         return loss, loss_dict
 
     def forward(self, x, *args, **kwargs):
@@ -465,12 +392,11 @@ class DDPM(pl.LightningModule):
 
 class LatentDiffusion(DDPM):
     def __init__(self,
-                #  auto_encoder,
-                first_stage_config,
+                 auto_encoder,
                  scale_factor=1.0,
                  scale_by_std=True,
                  scale_by_softsign=False,
-                #  input_keys=['image'],
+                 input_keys=['image'],
                  sample_type='deterministic',
                  default_scale=False,
                  *args,
@@ -493,7 +419,9 @@ class LatentDiffusion(DDPM):
             print('### USING SOFTSIGN RESCALING')
         assert (self.scale_by_std and self.scale_by_softsign) is False;
 
-        # self.input_keys = input_keys
+        self.init_first_stage(auto_encoder)
+        # self.instantiate_cond_stage(cond_stage_config)
+        self.input_keys = input_keys
         self.clip_denoised = False
         # self.sample_type = sample_type
 
@@ -502,37 +430,14 @@ class LatentDiffusion(DDPM):
             loss_dis_func = self.cfg.get('loss_dis', loss_dis_func_default)
             self.loss_dis_func = construct_class_by_name(**loss_dis_func)
 
-        self.restarted_from_ckpt = False
         if ckpt_path is not None:
             self.init_from_ckpt(ckpt_path, ignore_keys, only_model)
-            self.restarted_from_ckpt = True
-        else:
-            self.apply(self.init_weights)
-            self.instantiate_first_stage(first_stage_config)
-        # self.instantiate_cond_stage(cond_stage_config)
 
-
-    def instantiate_first_stage(self, config):
-        model = instantiate_from_config(config)
-        self.first_stage_model = model.eval()
-        self.first_stage_model.train = disabled_train
-
-        ckpt_path = config.get('ckpt_path', None)
-        if ckpt_path:
-            vae_ckpt = torch.load(ckpt_path, map_location="cpu")
-            self.first_stage_model.load_state_dict(vae_ckpt["state_dict"], strict=False)
-
-        # Disable gradient update of the VAE during LDM training
+    def init_first_stage(self, first_stage_model):
+        self.first_stage_model = first_stage_model.eval()
+        # self.first_stage_model.train = disabled_train
         for param in self.first_stage_model.parameters():
             param.requires_grad = False
-    
-
-
-    def init_weights(self, m):
-        if isinstance(m, torch.nn.Linear) or isinstance(m, torch.nn.Conv2d):
-            torch.nn.init.xavier_uniform_(m.weight)  # Use Xavier initialization
-            if m.bias is not None:
-                torch.nn.init.zeros_(m.bias)
 
     '''
     def init_from_ckpt(self, path, ignore_keys=list(), only_model=False):
@@ -562,51 +467,17 @@ class LatentDiffusion(DDPM):
         else:
             raise NotImplementedError(f"encoder_posterior of type '{type(encoder_posterior)}' not yet implemented")
         # return self.scale_factor * z.detach() + self.scale_bias
-        return self.scale_factor * z.detach()
-    
-    def configure_optimizers(self):
-
-        # filter out parameters that do not require gradients
-        optimizer = torch.optim.AdamW(
-            filter(lambda p: p.requires_grad, self.parameters()),
-            lr=self.opt_cfg.get('lr', 5e-5),  
-            weight_decay=self.opt_cfg.get('weight_decay', 1e-4),
-        )
-
-        # WarmUp + cosine learning rate scheduler
-        def WarmUpLrScheduler(iter):
-            warmup_iter = self.opt_cfg.get('warmup_iter', 5000)  # read from config
-            if iter <= warmup_iter:
-                ratio = (iter + 1) / warmup_iter
-            else:
-                ratio = max((1 - (iter - warmup_iter) / self.opt_cfg.get('train_num_steps', 10000)) ** 0.96,
-                            self.opt_cfg.get('min_lr', 1e-7) / self.opt_cfg.get('lr', 5e-5))
-            return ratio
-
-        # learning rate scheduler
-        lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=WarmUpLrScheduler)
-
-        return {
-            "optimizer": optimizer,
-            "lr_scheduler": {
-                "scheduler": lr_scheduler,
-                "interval": "step",  # update lr after each step
-                "frequency": 1  # called after every `interval` step
-            }
-        }
-
+        return z.detach()
 
     @torch.no_grad()
-    def on_train_batch_start(self, batch, batch_idx, dataloader_idx=0):
+    def on_train_batch_start(self, batch):
         # only for the first batch
-        if self.scale_by_std and self.current_epoch == 0 and self.global_step == 0 and batch_idx == 0 and (not self.scale_by_softsign):
+        if self.scale_by_std and (not self.scale_by_softsign):
             if not self.default_scale:
                 assert self.scale_factor == 1., 'rather not use custom rescaling and std-rescaling simultaneously'
                 # set rescale weight to 1./std of encodings
                 print("### USING STD-RESCALING ###")
-                # x, *_ = batch.values()
-                x = super().get_input(batch, self.first_stage_key)
-                x = x.to(self.device)
+                x, *_ = batch.values()
                 encoder_posterior = self.first_stage_model.encode(x)
                 z = self.get_first_stage_encoding(encoder_posterior)
                 del self.scale_factor
@@ -615,72 +486,41 @@ class LatentDiffusion(DDPM):
                 # print("### USING STD-RESCALING ###")
             else:
                 print(f'### USING DEFAULT SCALE {self.scale_factor}')
-        # else:
-        #     print(f'### USING SOFTSIGN SCALE !')
+        else:
+            print(f'### USING SOFTSIGN SCALE !')
 
     @torch.no_grad()
-    def get_input(self, batch, k, return_first_stage_outputs=False, return_original_cond=False,
-                  bs=None):
-        x = super().get_input(batch, k)
-        if bs is not None:
-            x = x[:bs]
-        x = x.to(self.device)
-        
-        if self.reference_key is not None:
-            ref = super().get_input(batch, self.reference_key)
-            if bs is not None:
-                ref = ref[:bs]
-            ref = ref.to(self.device)
-            encoder_posterior = self.first_stage_model.encode(ref)
-            ref = self.get_first_stage_encoding(encoder_posterior)
-        else:
-            ref = x
-
-        # to avioid cond=None as input of SwinTransformer, give random noise as cond
-        # cond = batch['cond'] if 'cond' in batch else None
-        if 'cond' in batch:
-            cond = batch['cond']
-        else:
-            cond = torch.randn_like(x)
-
-        encoder_posterior = self.first_stage_model.encode(x)
-        z = self.get_first_stage_encoding(encoder_posterior)
-
+    def get_input(self, batch, return_first_stage_outputs=False, return_original_cond=False):
+        assert 'image' in self.input_keys;
+        # if len(self.input_keys) > len(batch.keys()):
+        #     x, cond, *_ = batch.values()
+        # else:
+        #     x, cond = batch.values()
+        x = batch['image']
+        cond = batch['cond'] if 'cond' in batch else None
+        z = self.first_stage_model.encode(x)
+        z = self.get_first_stage_encoding(z)
         # if self.cfg.get('use_disloss', False):
-        out = [z, cond, ref]
+        out = [z, cond, x]
         if return_first_stage_outputs:
-            # xrec = self.first_stage_model.decode(z)
-            xrec = self.decode_first_stage(z)
+            xrec = self.first_stage_model.decode(z)
             out.extend([x, xrec])
         if return_original_cond:
             out.append(cond)
         return out
 
     def training_step(self, batch, **kwargs):
-        # z, c, x = self.get_input(batch, self.first_stage_key)
-        # if self.scale_by_softsign:
-        #     z = F.softsign(z)
-        # elif self.scale_by_std:
-        #     z = self.scale_factor * z
-        # # print('grad', self.scale_bias.grad)
-        # if self.cfg.get('use_disloss', False):
-        #     loss, loss_dict = self(z, c, ori_input=x, **kwargs)
-        # else:
-        #     loss, loss_dict = self(z, c, **kwargs)
-        # return loss, loss_dict
-        loss, loss_dict = self.shared_step(batch)
-
-        self.log_dict(loss_dict, prog_bar=True,
-                      logger=True, on_step=True, on_epoch=True)
-
-        self.log("global_step", self.global_step,
-                 prog_bar=True, logger=True, on_step=True, on_epoch=False)
-
-        if self.use_scheduler:
-            lr = self.optimizers().param_groups[0]['lr']
-            self.log('lr_abs', lr, prog_bar=True, logger=True, on_step=True, on_epoch=False)
-
-        return loss
+        z, c, x, *_ = self.get_input(batch)
+        if self.scale_by_softsign:
+            z = F.softsign(z)
+        elif self.scale_by_std:
+            z = self.scale_factor * z
+        # print('grad', self.scale_bias.grad)
+        if self.cfg.get('use_disloss', False):
+            loss, loss_dict = self(z, c, ori_input=x, **kwargs)
+        else:
+            loss, loss_dict = self(z, c, **kwargs)
+        return loss, loss_dict
 
 
     def p_losses(self, x_start, t, *args, **kwargs):
@@ -726,8 +566,7 @@ class LatentDiffusion(DDPM):
         loss_vlb += (x_rec - target3).abs().sum([1, 2, 3]) * rec_weight
         if self.cfg.get('use_disloss', False):
             with torch.no_grad():
-                # img_rec = self.first_stage_model.decode(x_rec / self.scale_factor)
-                img_rec = self.decode_first_stage(x_rec)
+                img_rec = self.first_stage_model.decode(x_rec / self.scale_factor)
                 img_rec = torch.clamp(img_rec, min=-1., max=1.)  # B, 1, 320, 320
             loss_tmp = (img_rec - kwargs['ori_input']).sum([1, 2, 3]) * rec_weight  # B, 1
             if self.perceptual_weight > 0.:
@@ -759,22 +598,6 @@ class LatentDiffusion(DDPM):
             raise NotImplementedError("unknown loss type '{loss_type}'")
 
         return loss
-    
-    @torch.no_grad()
-    def decode_first_stage(self, z, predict_cids=False, force_not_quantize=False):
-        if predict_cids:
-            if z.dim() == 4:
-                z = torch.argmax(z.exp(), dim=1).long()
-            z = self.first_stage_model.quantize.get_codebook_entry(z, shape=None)
-            z = rearrange(z, 'b h w c -> b c h w').contiguous()
-
-        z = 1. / self.scale_factor * z
-        return self.first_stage_model.decode(z)
-    
-    def shared_step(self, batch, **kwargs):
-        x, c, ref = self.get_input(batch, self.first_stage_key)
-        loss = self(x, c, ref)
-        return loss
 
     @torch.no_grad()
     def sample(self, batch_size=16, up_scale=1, cond=None, mask=None, denoise=True):
@@ -796,8 +619,7 @@ class LatentDiffusion(DDPM):
             z = z / (1 - z.abs())
             z = z.detach()
         #print(z.shape)
-        # x_rec = self.first_stage_model.decode(z.to(torch.float32))
-        x_rec = self.decode_first_stage(z)
+        x_rec = self.first_stage_model.decode(z.to(torch.float32))
         x_rec = unnormalize_to_zero_to_one(x_rec)
         x_rec = torch.clamp(x_rec, min=0., max=1.)
         if mask is not None:

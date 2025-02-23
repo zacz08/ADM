@@ -7,6 +7,7 @@ from functools import partial
 from einops import rearrange, reduce
 from .efficientnet import efficientnet_b7, EfficientNet_B7_Weights
 from .resnet import resnet101, ResNet101_Weights
+import pytorch_lightning as pl
 
 
 ### Compared to unet4:
@@ -588,7 +589,7 @@ class ConditionEncoder(nn.Module):
         return x
 
 
-class Unet(nn.Module):
+class Unet(pl.LightningModule):
     def __init__(
         self,
         dim,
@@ -612,14 +613,13 @@ class Unet(nn.Module):
         precondition=True,
         ckpt_path=None,
         ignore_keys=[],
-        cfg={},
         **kwargs
     ):
         super().__init__()
 
         # determine dimensions
-        self.cond_pe = cfg.get('cond_pe', False)
-        num_pos_feats = cfg.num_pos_feats if self.cond_pe else 0
+        self.cond_pe = kwargs.get('cond_pe', False)
+        num_pos_feats = kwargs.get('num_pos_feats') if self.cond_pe else 0
         self.channels = channels
         self.self_condition = self_condition
         input_channels = channels * (2 if self_condition else 1)
@@ -634,15 +634,18 @@ class Unet(nn.Module):
         # self.init_conv_mask = ConditionEncoder(down_dim_mults=cond_dim_mults, dim=cond_dim,
         #                                        in_dim=cond_in_dim, out_dim=init_dim)
 
-        if cfg.cond_net == 'effnet':
+        # if cfg.cond_net == 'effnet':
+        if kwargs.get('cond_net', None) == 'effnet':
             f_condnet = 48
             self.init_conv_mask = efficientnet_b7(weights=EfficientNet_B7_Weights)
-        elif cfg.cond_net == 'resnet':
+        # elif cfg.cond_net == 'resnet':
+        elif kwargs.get('cond_net', None) == 'resnet':
             f_condnet = 256
             self.init_conv_mask = resnet101(weights=ResNet101_Weights)
-        elif cfg.cond_net == 'swin':
+        # elif cfg.cond_net == 'swin':
+        elif kwargs.get('cond_net', None) == 'swin':
             f_condnet = 128
-            if cfg.get('single_channel_cond', False):
+            if kwargs.get('single_channel_cond', False):
                 from .swin_transformer_for_sci import swin_b, Swin_B_Weights
                 self.init_conv_mask = swin_b(weights=Swin_B_Weights)
             else:
@@ -658,7 +661,7 @@ class Unet(nn.Module):
         if self.cond_pe:
             self.cond_pos_embedding = nn.Sequential(
                 PositionEmbeddingLearned(
-                    feature_size=cfg.cond_feature_size, num_pos_feats=cfg.num_pos_feats//2),
+                    feature_size=kwargs.get('cond_feature_size'), num_pos_feats=kwargs.get('num_pos_feats')//2),
                 nn.Conv2d(num_pos_feats + init_dim, init_dim, 1)
             )
         # self.init_conv_mask = nn.Conv2d(1, init_dim, 7, padding=3)
@@ -667,7 +670,7 @@ class Unet(nn.Module):
         dims_rev = dims[::-1]
         in_out = list(zip(dims[:-1], dims[1:]))
         self.projects = nn.ModuleList()
-        if cfg.cond_net == 'effnet':
+        if kwargs.get('cond_net') == 'effnet':
             self.projects.append(nn.Conv2d(48, dims[0], 1))
             self.projects.append(nn.Conv2d(80, dims[1], 1))
             self.projects.append(nn.Conv2d(224, dims[2], 1))
@@ -784,7 +787,7 @@ class Unet(nn.Module):
         # self.init_weights()
         if ckpt_path is not None:
             self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
-        fix_bb = cfg.get('fix_bb', False)
+        fix_bb = kwargs.get('fix_bb', False)
         if fix_bb:
             for n, p in self.init_conv_mask.named_parameters():
                 p.requires_grad = False
