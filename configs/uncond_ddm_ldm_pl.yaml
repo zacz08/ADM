@@ -21,6 +21,7 @@ model:
     weighting_loss: True
     use_l1: True
     use_augment: False
+    use_ema: False
     # conditioning_key: crossattn
 
     first_stage_config:

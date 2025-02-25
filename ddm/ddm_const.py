@@ -1,23 +1,21 @@
 import torch
-import torch.nn as nn
 import math
 import torch.nn.functional as F
-from torch.cuda.amp import custom_bwd, custom_fwd
+from torch.amp import custom_bwd, custom_fwd
+from contextlib import contextmanager
 from .utils import default, identity, normalize_to_neg_one_to_one, unnormalize_to_zero_to_one, construct_class_by_name
-from tqdm.auto import tqdm
-from einops import rearrange, reduce
-from functools import partial
-from collections import namedtuple
+from einops import rearrange, repeat
+from torchvision.utils import make_grid
 from random import random, randint, sample, choice
 # from .encoder_decoder import DiagonalGaussianDistribution
 from ldm.modules.distributions.distributions import DiagonalGaussianDistribution
 
-import random
 from taming.modules.losses.vqperceptual import *
 from .augment import AugmentPipe
 from .loss import *
 import numpy as np
 from ldm.util import instantiate_from_config
+from ldm.modules.ema import LitEma
 import pytorch_lightning as pl
 
 # xt = x0 + ct + \epsilon * t.sqrt()
@@ -111,6 +109,7 @@ class DDPM(pl.LightningModule):
         sample_type='deterministic',
         perceptual_weight=1.,
         use_l1=False,
+        use_ema=True,
         **kwargs
     ):
         ckpt_path = kwargs.pop("ckpt_path", None)
@@ -122,14 +121,21 @@ class DDPM(pl.LightningModule):
         # assert not model.random_or_learned_sinusoidal_cond
 
         # self.model = model
-        # self.model = DiffusionWrapper(unet_config, conditioning_key)
-        self.model = instantiate_from_config(unet_config)
+        self.model = DiffusionWrapper(unet_config, conditioning_key)
+        self.model =self.model.diffusion_model
+        # self.model = instantiate_from_config(unet_config)
         self.channels = self.model.channels
         self.self_condition = self.model.self_condition
         self.first_stage_key = first_stage_key
         self.reference_key = reference_key
         self.cfg = kwargs
         self.opt_cfg = kwargs.get('trainer_cfg', None)
+
+        self.use_ema = use_ema
+        if self.use_ema:
+            self.model_ema = LitEma(self.model)
+            print(f"Keeping EMAs of {len(list(self.model_ema.buffers()))}.")
+
         self.use_scheduler = self.opt_cfg is not None
         self.scale_input = self.cfg.get('scale_input', 1)
         self.register_buffer('eps', torch.tensor(self.cfg.get('eps', 1e-4) if self.cfg is not None else 1e-4))
@@ -460,6 +466,66 @@ class DDPM(pl.LightningModule):
         if unnormalize:
             x_next = unnormalize_to_zero_to_one(x_next)
         return x_next
+    
+    @contextmanager
+    def ema_scope(self, context=None):
+        if self.use_ema:
+            self.model_ema.store(self.model.parameters())
+            self.model_ema.copy_to(self.model)
+            if context is not None:
+                print(f"{context}: Switched to EMA weights")
+        try:
+            yield None
+        finally:
+            if self.use_ema:
+                self.model_ema.restore(self.model.parameters())
+                if context is not None:
+                    print(f"{context}: Restored training weights")
+
+    def _get_rows_from_list(self, samples):
+        n_imgs_per_row = len(samples)
+        denoise_grid = rearrange(samples, 'n b c h w -> b n c h w')
+        denoise_grid = rearrange(denoise_grid, 'b n c h w -> (b n) c h w')
+        denoise_grid = make_grid(denoise_grid, nrow=n_imgs_per_row)
+        return denoise_grid
+    
+    @torch.no_grad()
+    def log_images(self, batch, N=8, n_row=2, sample=True, return_keys=None, **kwargs):
+        log = dict()
+        x = self.get_input(batch, self.first_stage_key)
+        N = min(x.shape[0], N)
+        n_row = min(x.shape[0], n_row)
+        x = x.to(self.device)[:N]
+        log["inputs"] = x
+
+        # get diffusion row
+        diffusion_row = list()
+        x_start = x[:n_row]
+
+        for t in range(self.num_timesteps):
+            if t % self.log_every_t == 0 or t == self.num_timesteps - 1:
+                t = repeat(torch.tensor([t]), '1 -> b', b=n_row)
+                t = t.to(self.device).long()
+                noise = torch.randn_like(x_start)
+                x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
+                diffusion_row.append(x_noisy)
+
+        log["diffusion_row"] = self._get_rows_from_list(diffusion_row)
+
+        if sample:
+            # get denoise row
+            with self.ema_scope("Plotting"):
+                samples, denoise_row = self.sample(batch_size=N, return_intermediates=True)
+
+            log["samples"] = samples
+            log["denoise_row"] = self._get_rows_from_list(denoise_row)
+
+        if return_keys:
+            if np.intersect1d(list(log.keys()), return_keys).shape[0] == 0:
+                return log
+            else:
+                return {key: log[key] for key in return_keys}
+        return log
 
 
 
@@ -573,27 +639,29 @@ class LatentDiffusion(DDPM):
             weight_decay=self.opt_cfg.get('weight_decay', 1e-4),
         )
 
-        # WarmUp + cosine learning rate scheduler
-        def WarmUpLrScheduler(iter):
-            warmup_iter = self.opt_cfg.get('warmup_iter', 5000)  # read from config
-            if iter <= warmup_iter:
-                ratio = (iter + 1) / warmup_iter
-            else:
-                ratio = max((1 - (iter - warmup_iter) / self.opt_cfg.get('train_num_steps', 10000)) ** 0.96,
-                            self.opt_cfg.get('min_lr', 1e-7) / self.opt_cfg.get('lr', 5e-5))
-            return ratio
+        # # WarmUp + cosine learning rate scheduler
+        # def WarmUpLrScheduler(iter):
+        #     warmup_iter = self.opt_cfg.get('warmup_iter', 5000)  # read from config
+        #     if iter <= warmup_iter:
+        #         ratio = (iter + 1) / warmup_iter
+        #     else:
+        #         ratio = max((1 - (iter - warmup_iter) / self.opt_cfg.get('train_num_steps', 10000)) ** 0.96,
+        #                     self.opt_cfg.get('min_lr', 1e-7) / self.opt_cfg.get('lr', 5e-5))
+        #     return ratio
 
-        # learning rate scheduler
-        lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=WarmUpLrScheduler)
+        # # learning rate scheduler
+        # lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=WarmUpLrScheduler)
 
-        return {
-            "optimizer": optimizer,
-            "lr_scheduler": {
-                "scheduler": lr_scheduler,
-                "interval": "step",  # update lr after each step
-                "frequency": 1  # called after every `interval` step
-            }
-        }
+        # return {
+        #     "optimizer": optimizer,
+        #     "lr_scheduler": {
+        #         "scheduler": lr_scheduler,
+        #         "interval": "step",  # update lr after each step
+        #         "frequency": 1  # called after every `interval` step
+        #     }
+        # }
+
+        return optimizer
 
 
     @torch.no_grad()
@@ -657,17 +725,7 @@ class LatentDiffusion(DDPM):
         return out
 
     def training_step(self, batch, **kwargs):
-        # z, c, x = self.get_input(batch, self.first_stage_key)
-        # if self.scale_by_softsign:
-        #     z = F.softsign(z)
-        # elif self.scale_by_std:
-        #     z = self.scale_factor * z
-        # # print('grad', self.scale_bias.grad)
-        # if self.cfg.get('use_disloss', False):
-        #     loss, loss_dict = self(z, c, ori_input=x, **kwargs)
-        # else:
-        #     loss, loss_dict = self(z, c, **kwargs)
-        # return loss, loss_dict
+
         loss, loss_dict = self.shared_step(batch)
 
         self.log_dict(loss_dict, prog_bar=True,
@@ -781,7 +839,8 @@ class LatentDiffusion(DDPM):
         image_size, channels = self.image_size, self.channels
         if cond is not None:
             batch_size = cond.shape[0]
-        down_ratio = self.first_stage_model.down_ratio
+        down_ratio = 2 ** (len(self.first_stage_model.ddconfig['ch_mult']) - 1)
+        # down_ratio = self.first_stage_model.down_ratio
         self.sample_type = self.cfg.get('sample_type', 'deterministic')
         if self.sample_type == 'deterministic':
             z = self.sample_fn_d((batch_size, channels, image_size[0]//down_ratio, image_size[1]//down_ratio),
@@ -790,16 +849,16 @@ class LatentDiffusion(DDPM):
             z = self.sample_fn_s((batch_size, channels, image_size[0]//down_ratio, image_size[1]//down_ratio),
                            up_scale=up_scale, unnormalize=False, cond=cond, denoise=denoise)
 
-        if self.scale_by_std:
-            z = 1. / self.scale_factor * z.detach()
-        elif self.scale_by_softsign:
-            z = z / (1 - z.abs())
-            z = z.detach()
+        # if self.scale_by_std:
+        #     z = 1. / self.scale_factor * z.detach()
+        # elif self.scale_by_softsign:
+        #     z = z / (1 - z.abs())
+        #     z = z.detach()
         #print(z.shape)
         # x_rec = self.first_stage_model.decode(z.to(torch.float32))
-        x_rec = self.decode_first_stage(z)
-        x_rec = unnormalize_to_zero_to_one(x_rec)
-        x_rec = torch.clamp(x_rec, min=0., max=1.)
+        x_rec = self.decode_first_stage(z.to(torch.float32))
+        # x_rec = unnormalize_to_zero_to_one(x_rec)
+        # x_rec = torch.clamp(x_rec, min=0., max=1.)
         if mask is not None:
             x_rec = mask * unnormalize_to_zero_to_one(cond) + (1 - mask) * x_rec
         return x_rec
@@ -917,17 +976,76 @@ class LatentDiffusion(DDPM):
         if unnormalize:
             img = unnormalize_to_zero_to_one(img)
         return img
+    
+    @torch.no_grad()
+    def sample_log(self, cond, batch_size, ddim, ddim_steps, **kwargs):
+        ddim_sampler = DDIMSampler(self)
+        b, c, h, w = cond["c_concat"][0].shape
+        # shape = (self.channels, h // 8, w // 8)
+        shape = (self.channels, 64, 64)     # input bev_seg_mep resolution 512 / 8 = 64
+        samples, intermediates = ddim_sampler.sample(ddim_steps, batch_size, shape, cond, verbose=False, **kwargs)
+        return samples, intermediates
+    
+
+    @torch.no_grad()
+    def log_images(self, batch, N=4, n_row=2, sample=True, ddim_steps=50, ddim_eta=0.0, return_keys=None,
+                   quantize_denoised=True, inpaint=True, plot_denoise_rows=False, plot_progressive_rows=True,
+                   plot_diffusion_rows=False, unconditional_guidance_scale=1.0, unconditional_guidance_label=None,
+                   use_ema_scope=True, val_sample_input=None,
+                   **kwargs):
+        use_ddim = ddim_steps is not None
+
+        log = dict()
+        z, c, ref = self.get_input(batch, self.first_stage_key, bs=N)
+        # c_cat, c = c["c_concat"][0][:N], c["c_crossattn"][0][:N]
+        N = min(z.shape[0], N)
+        n_row = min(z.shape[0], n_row)
+
+        log["recon_sd_input"] = self.decode_first_stage(z)    
+
+        if plot_diffusion_rows:
+            # get diffusion row
+            diffusion_row = list()
+            z_start = z[:n_row]
+            for t in range(self.num_timesteps):
+                if t % self.log_every_t == 0 or t == self.num_timesteps - 1:
+                    t = repeat(torch.tensor([t]), '1 -> b', b=n_row)
+                    t = t.to(self.device).long()
+                    noise = torch.randn_like(z_start)
+                    z_noisy = self.q_sample(x_start=z_start, t=t, noise=noise)
+                    diffusion_row.append(self.decode_first_stage(z_noisy))
+
+            diffusion_row = torch.stack(diffusion_row)  # n_log_step, n_row, C, H, W
+            diffusion_grid = rearrange(diffusion_row, 'n b c h w -> b n c h w')
+            diffusion_grid = rearrange(diffusion_grid, 'b n c h w -> (b n) c h w')
+            diffusion_grid = make_grid(diffusion_grid, nrow=diffusion_row.shape[0])
+            log["diffusion_row"] = diffusion_grid
+
+        if sample:
+            # get denoise row
+            # samples, z_denoise_row = self.sample_log(cond={"c_concat": [c_cat], "c_crossattn": [c]},
+            #                                          batch_size=N, ddim=use_ddim,
+            #                                          ddim_steps=ddim_steps, eta=ddim_eta)
+            samples = self.sample(batch_size=N)
+            # x_samples = self.decode_first_stage(samples)
+            log["samples"] = samples
+            # log["samples"] = self.render_stp3_prediction(x_samples) # decode with stp3 decoder
+            if plot_denoise_rows:
+                denoise_grid = self._get_denoise_row_from_list(z_denoise_row)
+                log["denoise_row"] = denoise_grid
+
+        return log
 
 class SpecifyGradient(torch.autograd.Function):
     @staticmethod
-    @custom_fwd
+    @custom_fwd(device_type="cuda")
     def forward(ctx, input_tensor, gt_grad):
         ctx.save_for_backward(gt_grad)
         # we return a dummy value 1, which will be scaled by amp's scaler so we get the scale in backward.
         return torch.ones(input_tensor.shape, device=input_tensor.device, dtype=input_tensor.dtype)
 
     @staticmethod
-    @custom_bwd
+    @custom_bwd(device_type="cuda")
     def backward(ctx, grad_scale):
         (gt_grad,) = ctx.saved_tensors
         gt_grad = gt_grad * grad_scale
