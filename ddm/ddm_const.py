@@ -123,9 +123,7 @@ class DDPM(pl.LightningModule):
         # self.model = model
         self.model = DiffusionWrapper(unet_config, conditioning_key)
         self.model =self.model.diffusion_model
-        # self.model = instantiate_from_config(unet_config)
         self.channels = self.model.channels
-        self.self_condition = self.model.self_condition
         self.first_stage_key = first_stage_key
         self.reference_key = reference_key
         self.cfg = kwargs

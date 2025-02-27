@@ -57,20 +57,40 @@ model:
       ckpt_path: "./models/vae_epoch=5-step=76320.ckpt"
     
     unet_config:
-      target: unet.uncond_unet.EDMPrecond
+      # target: unet.uncond_unet.EDMPrecond
+      target: ldm.modules.diffusionmodules.adm_unet.EDMPrecond
       params:
         img_resolution: 64
         img_channels: 4
         sigma_data: 1.0  # Expected standard deviation of the training data.
         model_type: 'DhariwalUNet'
-        model_channels: 320  # Base multiplier for the number of channels.
-        channel_mult: [ 1, 2, 4, 4 ]
+        model_channels: 256  # Base multiplier for the number of channels.
+        channel_mult: [ 1, 2, 3, 4 ]
         channel_mult_emb: 4  # Multiplier for the dimensionality of the embedding vector.
         num_blocks: 3  # Number of residual blocks per resolution.
         attn_resolutions: [ 32, 16 ]  # List of resolutions with self-attention.
         dropout: 0.1  # dropout.
         label_dropout: 0
         augment_dim: 0
+
+    # unet_config:
+    #   # target: cldm.cldm.ControlledUnetModel
+    #   target: ldm.modules.diffusionmodules.openaimodel.UNetModel
+    #   params:
+    #     use_checkpoint: False
+    #     image_size: 64 # unused
+    #     in_channels: 4
+    #     out_channels: 4
+    #     model_channels: 320
+    #     attention_resolutions: [ 4, 2, 1 ]
+    #     num_res_blocks: 2
+    #     channel_mult: [ 1, 2, 4, 4 ]
+    #     num_head_channels: 64 # need to fix for flash-attn
+    #     use_spatial_transformer: True
+    #     use_linear_in_transformer: True
+    #     transformer_depth: 1
+    #     context_dim: 1024
+    #     legacy: False
 
     trainer_cfg:
       gradient_accumulate_every: 2
