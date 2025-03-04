@@ -211,15 +211,6 @@ class DDPM(pl.LightningModule):
             print(f"Missing Keys: {missing}")
         if len(unexpected) > 0:
             print(f"Unexpected Keys: {unexpected}")
-
-
-    # def get_input(self, batch, return_first_stage_outputs=False, return_original_cond=False):
-    #     assert 'image' in self.input_keys;
-    #     if len(self.input_keys) > len(batch.keys()):
-    #         x, *_ = batch.values()
-    #     else:
-    #         x = batch.values()
-    #     return x
     
     def get_input(self, batch, k):
         x = batch[k]
@@ -240,14 +231,14 @@ class DDPM(pl.LightningModule):
         loss, loss_dict = self(x)
         return loss, loss_dict
 
-    def forward(self, x, *args, **kwargs):
+    def forward(self, x, **kwargs):
         if self.scale_input != 1:
             x = x * self.scale_input
         # continuous time, t in [0, 1]
         eps = self.eps  # smallest time step
         t = torch.rand(x.shape[0], device=x.device) * (1. - eps) + eps
         # t = torch.clamp(t, eps, 1.)
-        return self.p_losses(x, t, *args, **kwargs)
+        return self.p_losses(x, t, **kwargs)
 
 
     def q_sample(self, x_start, noise, t, C):
@@ -487,54 +478,52 @@ class DDPM(pl.LightningModule):
         denoise_grid = make_grid(denoise_grid, nrow=n_imgs_per_row)
         return denoise_grid
     
-    @torch.no_grad()
-    def log_images(self, batch, N=8, n_row=2, sample=True, return_keys=None, **kwargs):
-        log = dict()
-        x = self.get_input(batch, self.first_stage_key)
-        N = min(x.shape[0], N)
-        n_row = min(x.shape[0], n_row)
-        x = x.to(self.device)[:N]
-        log["inputs"] = x
+    # @torch.no_grad()
+    # def log_images(self, batch, N=8, n_row=2, sample=True, return_keys=None, **kwargs):
+    #     log = dict()
+    #     x = self.get_input(batch, self.first_stage_key)
+    #     N = min(x.shape[0], N)
+    #     n_row = min(x.shape[0], n_row)
+    #     x = x.to(self.device)[:N]
+    #     log["inputs"] = x
 
-        # get diffusion row
-        diffusion_row = list()
-        x_start = x[:n_row]
+    #     # get diffusion row
+    #     diffusion_row = list()
+    #     x_start = x[:n_row]
 
-        for t in range(self.num_timesteps):
-            if t % self.log_every_t == 0 or t == self.num_timesteps - 1:
-                t = repeat(torch.tensor([t]), '1 -> b', b=n_row)
-                t = t.to(self.device).long()
-                noise = torch.randn_like(x_start)
-                x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
-                diffusion_row.append(x_noisy)
+    #     for t in range(self.num_timesteps):
+    #         if t % self.log_every_t == 0 or t == self.num_timesteps - 1:
+    #             t = repeat(torch.tensor([t]), '1 -> b', b=n_row)
+    #             t = t.to(self.device).long()
+    #             noise = torch.randn_like(x_start)
+    #             x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
+    #             diffusion_row.append(x_noisy)
 
-        log["diffusion_row"] = self._get_rows_from_list(diffusion_row)
+    #     log["diffusion_row"] = self._get_rows_from_list(diffusion_row)
 
-        if sample:
-            # get denoise row
-            with self.ema_scope("Plotting"):
-                samples, denoise_row = self.sample(batch_size=N, return_intermediates=True)
+    #     if sample:
+    #         # get denoise row
+    #         with self.ema_scope("Plotting"):
+    #             samples, denoise_row = self.sample(batch_size=N, return_intermediates=True)
 
-            log["samples"] = samples
-            log["denoise_row"] = self._get_rows_from_list(denoise_row)
+    #         log["samples"] = samples
+    #         log["denoise_row"] = self._get_rows_from_list(denoise_row)
 
-        if return_keys:
-            if np.intersect1d(list(log.keys()), return_keys).shape[0] == 0:
-                return log
-            else:
-                return {key: log[key] for key in return_keys}
-        return log
+    #     if return_keys:
+    #         if np.intersect1d(list(log.keys()), return_keys).shape[0] == 0:
+    #             return log
+    #         else:
+    #             return {key: log[key] for key in return_keys}
+    #     return log
 
 
 
 class LatentDiffusion(DDPM):
     def __init__(self,
-                #  auto_encoder,
-                first_stage_config,
+                 first_stage_config,
                  scale_factor=1.0,
                  scale_by_std=True,
                  scale_by_softsign=False,
-                #  input_keys=['image'],
                  sample_type='deterministic',
                  default_scale=False,
                  *args,
@@ -724,7 +713,7 @@ class LatentDiffusion(DDPM):
 
     def training_step(self, batch, **kwargs):
 
-        loss, loss_dict = self.shared_step(batch)
+        loss, loss_dict = self.shared_step(batch, **kwargs)
 
         self.log_dict(loss_dict, prog_bar=True,
                       logger=True, on_step=True, on_epoch=True)
@@ -737,9 +726,14 @@ class LatentDiffusion(DDPM):
             self.log('lr_abs', lr, prog_bar=True, logger=True, on_step=True, on_epoch=False)
 
         return loss
+    
+    def apply_model(self, x_noisy, t, cond):
+        cond = {'c_concat': cond}
+        C_pred, noise_pred = self.model(x_noisy, t, **cond)
+        return C_pred, noise_pred
 
 
-    def p_losses(self, x_start, t, *args, **kwargs):
+    def p_losses(self, x_start, t, cond, *args, **kwargs):
         if self.start_dist == 'normal':
             noise = torch.randn_like(x_start)
         elif self.start_dist == 'uniform':
@@ -751,8 +745,7 @@ class LatentDiffusion(DDPM):
         C = -1 * x_start             # U(t) = Ct, U(1) = -x0
         # C = -2 * x_start               # U(t) = 1/2 * C * t**2, U(1) = 1/2 * C = -x0
         x_noisy = self.q_sample(x_start=x_start, noise=noise, t=t, C=C)  # (b, 2, c, h, w)
-        pred = self.model(x_noisy, t, *args, **kwargs)
-        C_pred, noise_pred = pred
+        C_pred, noise_pred = self.apply_model(x_noisy, t, cond)
         x_rec = self.pred_x0_from_xt(x_noisy, noise_pred, C_pred, t)
         loss_dict = {}
         prefix = 'train'
@@ -828,15 +821,15 @@ class LatentDiffusion(DDPM):
         return self.first_stage_model.decode(z)
     
     def shared_step(self, batch, **kwargs):
-        x, c, ref = self.get_input(batch, self.first_stage_key)
-        loss = self(x, c, ref)
-        return loss
+        x, cond, ref = self.get_input(batch, self.first_stage_key)
+        loss, loss_dic = self(x, cond=cond, ref=ref, **kwargs)
+        return loss, loss_dic
 
     @torch.no_grad()
     def sample(self, batch_size=16, up_scale=1, cond=None, mask=None, denoise=True):
         image_size, channels = self.image_size, self.channels
-        if cond is not None:
-            batch_size = cond.shape[0]
+        # if cond is not None:
+        #     batch_size = cond.shape[0]
         down_ratio = 2 ** (len(self.first_stage_model.ddconfig['ch_mult']) - 1)
         # down_ratio = self.first_stage_model.down_ratio
         self.sample_type = self.cfg.get('sample_type', 'deterministic')
@@ -947,11 +940,11 @@ class LatentDiffusion(DDPM):
             # t_cur = torch.full((batch,), t_c, device=device)
             # t_next = torch.full((batch,), t_n, device=device)  # 0, ..., N-1
             x_cur = x_next
-            if cond is not None:
-                pred = self.model(x_cur, t_cur, cond)
-            else:
-                pred = self.model(x_cur, t_cur)
-            C, noise = pred[:2]
+            # if cond is not None:
+            #     pred = self.apply_model(x_cur, t_cur, cond)
+            # else:
+            #     pred = self.model(x_cur, t_cur)
+            C, noise = self.apply_model(x_cur, t_cur, cond)
             C, noise = C.to(torch.float64), noise.to(torch.float64)
             # x0 = x_cur - C * t_cur - noise * t_cur.sqrt()
             d_cur = C + noise / (t_cur.sqrt() + t_next.sqrt())
@@ -975,14 +968,14 @@ class LatentDiffusion(DDPM):
             img = unnormalize_to_zero_to_one(img)
         return img
     
-    @torch.no_grad()
-    def sample_log(self, cond, batch_size, ddim, ddim_steps, **kwargs):
-        ddim_sampler = DDIMSampler(self)
-        b, c, h, w = cond["c_concat"][0].shape
-        # shape = (self.channels, h // 8, w // 8)
-        shape = (self.channels, 64, 64)     # input bev_seg_mep resolution 512 / 8 = 64
-        samples, intermediates = ddim_sampler.sample(ddim_steps, batch_size, shape, cond, verbose=False, **kwargs)
-        return samples, intermediates
+    # @torch.no_grad()
+    # def sample_log(self, cond, batch_size, ddim, ddim_steps, **kwargs):
+    #     ddim_sampler = DDIMSampler(self)
+    #     b, c, h, w = cond["c_concat"][0].shape
+    #     # shape = (self.channels, h // 8, w // 8)
+    #     shape = (self.channels, 64, 64)     # input bev_seg_mep resolution 512 / 8 = 64
+    #     samples, intermediates = ddim_sampler.sample(ddim_steps, batch_size, shape, cond, verbose=False, **kwargs)
+    #     return samples, intermediates
     
 
     @torch.no_grad()
