@@ -93,7 +93,6 @@ class DiffusionWrapper(pl.LightningModule):
 class DDPM(pl.LightningModule):
     def __init__(
         self,
-        # model,
         unet_config,
         *,
         image_size,
@@ -120,7 +119,6 @@ class DDPM(pl.LightningModule):
         # assert not (type(self) == DDPM and model.channels != model.out_dim)
         # assert not model.random_or_learned_sinusoidal_cond
 
-        # self.model = model
         self.model = DiffusionWrapper(unet_config, conditioning_key)
         self.model =self.model.diffusion_model
         self.channels = self.model.channels
@@ -726,6 +724,10 @@ class LatentDiffusion(DDPM):
             self.log('lr_abs', lr, prog_bar=True, logger=True, on_step=True, on_epoch=False)
 
         return loss
+
+    def predict_step(self, batch):
+        pass
+
     
     def apply_model(self, x_noisy, t, cond):
         cond = {'c_concat': cond}
@@ -968,15 +970,6 @@ class LatentDiffusion(DDPM):
             img = unnormalize_to_zero_to_one(img)
         return img
     
-    # @torch.no_grad()
-    # def sample_log(self, cond, batch_size, ddim, ddim_steps, **kwargs):
-    #     ddim_sampler = DDIMSampler(self)
-    #     b, c, h, w = cond["c_concat"][0].shape
-    #     # shape = (self.channels, h // 8, w // 8)
-    #     shape = (self.channels, 64, 64)     # input bev_seg_mep resolution 512 / 8 = 64
-    #     samples, intermediates = ddim_sampler.sample(ddim_steps, batch_size, shape, cond, verbose=False, **kwargs)
-    #     return samples, intermediates
-    
 
     @torch.no_grad()
     def log_images(self, batch, N=4, n_row=2, sample=True, ddim_steps=50, ddim_eta=0.0, return_keys=None,
@@ -1021,10 +1014,6 @@ class LatentDiffusion(DDPM):
             # x_samples = self.decode_first_stage(samples)
             log["samples"] = samples
             # log["samples"] = self.render_stp3_prediction(x_samples) # decode with stp3 decoder
-            if plot_denoise_rows:
-                denoise_grid = self._get_denoise_row_from_list(z_denoise_row)
-                log["denoise_row"] = denoise_grid
-
         return log
 
 class SpecifyGradient(torch.autograd.Function):
