@@ -306,6 +306,8 @@ class MSE_Loss(nn.Module):
                 loss = F.mse_loss(pred, gt, reduction='none').mean(dim=reduce_dims)
             elif reduction == 'sum':
                 loss = F.mse_loss(pred, gt, reduction='none').sum(dim=reduce_dims)
+            elif reduction == 'none':
+                loss = F.mse_loss(pred, gt, reduction='none')
             else:
                 raise NotImplementedError("")
         else:

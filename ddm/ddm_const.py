@@ -160,12 +160,13 @@ class DDPM(pl.LightningModule):
 
         register_buffer = lambda name, val: self.register_buffer(name, val.to(torch.float32))
 
-        loss_main_cfg_default = {'class_name': 'ddm.loss.MSE_Loss'}
-        loss_vlb_cfg_default = {'class_name': 'ddm.loss.MAE_Loss'}
+        # loss_main_cfg_default = {'class_name': 'ddm.loss.MSE_Loss'}
+        loss_main_cfg_default = {'class_name': 'ldm.models.autoencoder_retrain.WeightedMSELoss'}
+        # loss_vlb_cfg_default = {'class_name': 'ddm.loss.MAE_Loss'}
         loss_main_cfg = self.cfg.get('loss_main', loss_main_cfg_default)
-        loss_vlb_cfg = self.cfg.get('loss_vlb', loss_vlb_cfg_default)
+        # loss_vlb_cfg = self.cfg.get('loss_vlb', loss_vlb_cfg_default)
         self.loss_main_func = construct_class_by_name(**loss_main_cfg)
-        self.loss_vlb_func = construct_class_by_name(**loss_vlb_cfg)
+        # self.loss_vlb_func = construct_class_by_name(**loss_vlb_cfg)
         self.use_l1 = use_l1
 
         self.perceptual_weight = perceptual_weight
@@ -731,7 +732,7 @@ class LatentDiffusion(DDPM):
         pass
 
     
-    def apply_model(self, x_noisy, t, cond):
+    def apply_model(self, x_noisy, t, cond, **kwargs):
         cond = {'c_concat': cond}
         C_pred, noise_pred = self.model(x_noisy, t, **cond)
         return C_pred, noise_pred
@@ -749,7 +750,7 @@ class LatentDiffusion(DDPM):
         C = -1 * x_start             # U(t) = Ct, U(1) = -x0
         # C = -2 * x_start               # U(t) = 1/2 * C * t**2, U(1) = 1/2 * C = -x0
         x_noisy = self.q_sample(x_start=x_start, noise=noise, t=t, C=C)  # (b, 2, c, h, w)
-        C_pred, noise_pred = self.apply_model(x_noisy, t, cond)
+        C_pred, noise_pred = self.apply_model(x_noisy, t, cond, **kwargs)
         x_rec = self.pred_x0_from_xt(x_noisy, noise_pred, C_pred, t)
         loss_dict = {}
         prefix = 'train'
@@ -757,26 +758,42 @@ class LatentDiffusion(DDPM):
         target1 = C
         target2 = noise
         target3 = x_start
-        loss_simple = 0.
-        loss_vlb = 0.
+        # loss_simple = 0.
+        # loss_vlb = 0.
         # use l1 + l2
-        if self.weighting_loss:
-            simple_weight1 = (t ** 2 - t + 1) / t
-            # simple_weight2 = (t ** 2 - t + 1) / (1 - t + self.eps) ** 2 # eps prevents div 0
-            simple_weight2 = (t ** 2 - t + 1) / (1 - t + self.eps)  # eps prevents div 0
-        else:
-            simple_weight1 = 1
-            simple_weight2 = 1
-        loss_simple += simple_weight1 * self.loss_main_func(C_pred, target1, reduction='sum') + \
-                       simple_weight2 * self.loss_main_func(noise_pred, target2, reduction='sum')
-        if self.use_l1:
-            loss_simple += simple_weight1 * (C_pred - target1).abs().sum([1, 2, 3]) + \
-                           simple_weight2 * (noise_pred - target2).abs().sum([1, 2, 3])
-            loss_simple = loss_simple / 2
-        loss = loss_simple.sum() / C.shape[0]
-        rec_weight = -torch.log(t.reshape(C.shape[0], 1)) / 2
+        # if self.weighting_loss:
+        #     simple_weight1 = (t ** 2 - t + 1) / t
+        #     # simple_weight2 = (t ** 2 - t + 1) / (1 - t + self.eps) ** 2 # eps prevents div 0
+        #     simple_weight2 = (t ** 2 - t + 1) / (1 - t + self.eps)  # eps prevents div 0
+        # else:
+        #     simple_weight1 = 1
+        #     simple_weight2 = 1
+        # loss_simple += simple_weight1 * self.loss_main_func(C_pred, target1, reduction='sum') + \
+        #                simple_weight2 * self.loss_main_func(noise_pred, target2, reduction='sum')
+        
+        ### calculate the weights for each layer
+        img_ori = kwargs['batch'][self.first_stage_key].permute(0, 3, 1, 2)
+        bs, num_layers, h, w = img_ori.shape
+        total_pixel = h * w
+        layer_pixel = ((img_ori > 0.99) & (img_ori < 1.01)).sum(dim=(2, 3))    # calculate the sum of pixel values of each layer
+        weights = torch.log(total_pixel / (layer_pixel + 1e-3))  # [bs, 4]
+        weights = weights ** 2
+        rec_weight = weights.view(bs, num_layers, 1, 1)     # # [bs, 4]->[bs, 4, 1, 1]
+        
+        loss_simple = self.loss_main_func(C_pred, target1, rec_weight) + \
+                        self.loss_main_func(noise_pred, target2, rec_weight)
+        # loss_simple = loss_simple * rec_weight
+        # if self.use_l1:
+        #     loss_simple += simple_weight1 * (C_pred - target1).abs().sum([1, 2, 3]) + \
+        #                    simple_weight2 * (noise_pred - target2).abs().sum([1, 2, 3])
+        #     loss_simple = loss_simple / 2
+        # loss = loss_simple.sum() / C.shape[0]
+        loss = loss_simple
+        # rec_weight = -torch.log(t.reshape(C.shape[0], 1)) / 2
         # rec_weight = 2 * (1 - t.reshape(C.shape[0], 1)) ** 2
-        loss_vlb += (x_rec - target3).abs().sum([1, 2, 3]) * rec_weight
+        # loss_vlb += (x_rec - target3).abs().sum([1, 2, 3]) * rec_weight
+        loss_vlb = (x_rec - target3).abs()* rec_weight
+        loss_vlb = loss_vlb.mean()
         if self.cfg.get('use_disloss', False):
             with torch.no_grad():
                 # img_rec = self.first_stage_model.decode(x_rec / self.scale_factor)
@@ -788,29 +805,28 @@ class LatentDiffusion(DDPM):
             loss_distill = SpecifyGradient.apply(x_rec, loss_tmp.mean())
             loss_vlb += loss_distill  # .mean()
 
-        loss += loss_vlb.sum() / C.shape[0]
+        # loss += loss_vlb.sum() / C.shape[0]
+        loss += loss_vlb
         # loss = loss_simple.sum() / C.shape[0] + loss_vlb.sum() / C.shape[0]
 
         ## Segmentation loss
         if cond['c_concat'] is not None:
-            ori_input = self.get_input(kwargs['batch'], self.first_stage_key)
-            bs, num_layers, h, w = ori_input.shape
-            total_pixel = h * w
-            layer_pixel = ((x_start > 0.99) & (x_start < 1.01)).sum(dim=(2, 3))    # calculate the sum of pixel values of each layer
-            weights = torch.log(total_pixel / (layer_pixel + 1e-3))  # [bs, 4]
-            weights = weights ** 2
-            rec_weight = weights.view(bs, num_layers, 1, 1)     # # [bs, 4]->[bs, 4, 1, 1]
             img_rec = self.decode_first_stage(x_rec)
-            loss_seg = self.loss_seg_func(img_rec, ori_input, rec_weight)
+            loss_seg = self.loss_seg_func(img_rec, img_ori, rec_weight)
             loss += loss_seg
 
-        loss_dict.update(
-            {f'{prefix}/loss_simple': loss_simple.detach().sum() / C.shape[0] / C.shape[1] / C.shape[2] / C.shape[3]})
-        loss_dict.update(
-            {f'{prefix}/loss_vlb': loss_vlb.detach().sum() / C.shape[0] / C.shape[1] / C.shape[2] / C.shape[3]})
-        loss_dict.update(
-            {f'{prefix}/loss_seg': loss_seg.detach().sum() / C.shape[0] / C.shape[1] / C.shape[2] / C.shape[3]})
-        loss_dict.update({f'{prefix}/loss': loss.detach().sum() / C.shape[0] / C.shape[1] / C.shape[2] / C.shape[3]})
+        # loss_dict.update(
+        #     {f'{prefix}/loss_simple': loss_simple.detach().sum() / C.shape[0] / C.shape[1] / C.shape[2] / C.shape[3]})
+        # loss_dict.update(
+        #     {f'{prefix}/loss_vlb': loss_vlb.detach().sum() / C.shape[0] / C.shape[1] / C.shape[2] / C.shape[3]})
+        loss_dict.update({
+            f'{prefix}/loss_simple': loss_simple.detach(),
+            f'{prefix}/loss_vlb': loss_vlb.detach()
+            })
+        if cond['c_concat'] is not None:
+            loss_dict.update({f'{prefix}/loss_seg': loss_seg.detach()})
+        # loss_dict.update({f'{prefix}/loss': loss.detach().sum() / C.shape[0] / C.shape[1] / C.shape[2] / C.shape[3]})
+        loss_dict.update({f'{prefix}/loss': loss.detach()})
 
         return loss, loss_dict
 
@@ -841,6 +857,7 @@ class LatentDiffusion(DDPM):
         return self.first_stage_model.decode(z)
     
     def shared_step(self, batch, **kwargs):
+        kwargs['batch'] = batch
         x, cond, ref = self.get_input(batch, self.first_stage_key)
         loss, loss_dic = self(x, cond=cond, ref=ref, **kwargs)
         return loss, loss_dic
