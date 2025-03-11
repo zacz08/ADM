@@ -17,6 +17,7 @@ import numpy as np
 from ldm.util import instantiate_from_config
 from ldm.modules.ema import LitEma
 import pytorch_lightning as pl
+from ldm.models.autoencoder_retrain import SegmentationLoss
 
 # xt = x0 + ct + \epsilon * t.sqrt()
 
@@ -552,6 +553,7 @@ class LatentDiffusion(DDPM):
             loss_dis_func_default = {'class_name': 'ddm.loss.MAE_Loss'}
             loss_dis_func = self.cfg.get('loss_dis', loss_dis_func_default)
             self.loss_dis_func = construct_class_by_name(**loss_dis_func)
+        self.loss_seg_func = SegmentationLoss()
 
         self.restarted_from_ckpt = False
         if ckpt_path is not None:
@@ -788,10 +790,26 @@ class LatentDiffusion(DDPM):
 
         loss += loss_vlb.sum() / C.shape[0]
         # loss = loss_simple.sum() / C.shape[0] + loss_vlb.sum() / C.shape[0]
+
+        ## Segmentation loss
+        if cond['c_concat'] is not None:
+            ori_input = self.get_input(kwargs['batch'], self.first_stage_key)
+            bs, num_layers, h, w = ori_input.shape
+            total_pixel = h * w
+            layer_pixel = ((x_start > 0.99) & (x_start < 1.01)).sum(dim=(2, 3))    # calculate the sum of pixel values of each layer
+            weights = torch.log(total_pixel / (layer_pixel + 1e-3))  # [bs, 4]
+            weights = weights ** 2
+            rec_weight = weights.view(bs, num_layers, 1, 1)     # # [bs, 4]->[bs, 4, 1, 1]
+            img_rec = self.decode_first_stage(x_rec)
+            loss_seg = self.loss_seg_func(img_rec, ori_input, rec_weight)
+            loss += loss_seg
+
         loss_dict.update(
             {f'{prefix}/loss_simple': loss_simple.detach().sum() / C.shape[0] / C.shape[1] / C.shape[2] / C.shape[3]})
         loss_dict.update(
             {f'{prefix}/loss_vlb': loss_vlb.detach().sum() / C.shape[0] / C.shape[1] / C.shape[2] / C.shape[3]})
+        loss_dict.update(
+            {f'{prefix}/loss_seg': loss_seg.detach().sum() / C.shape[0] / C.shape[1] / C.shape[2] / C.shape[3]})
         loss_dict.update({f'{prefix}/loss': loss.detach().sum() / C.shape[0] / C.shape[1] / C.shape[2] / C.shape[3]})
 
         return loss, loss_dict
