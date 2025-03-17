@@ -675,8 +675,7 @@ class LatentDiffusion(DDPM):
         #     print(f'### USING SOFTSIGN SCALE !')
 
     @torch.no_grad()
-    def get_input(self, batch, k, return_first_stage_outputs=False, return_original_cond=False,
-                  bs=None):
+    def get_input(self, batch, k, return_first_stage_outputs=False, bs=None):
         x = super().get_input(batch, k)
         if bs is not None:
             x = x[:bs]
@@ -692,24 +691,14 @@ class LatentDiffusion(DDPM):
         else:
             ref = x
 
-        # to avioid cond=None as input of SwinTransformer, give random noise as cond
-        # cond = batch['cond'] if 'cond' in batch else None
-        if 'cond' in batch:
-            cond = batch['cond']
-        else:
-            cond = torch.randn_like(x)
-
         encoder_posterior = self.first_stage_model.encode(x)
         z = self.get_first_stage_encoding(encoder_posterior)
 
-        # if self.cfg.get('use_disloss', False):
+        cond = None
         out = [z, cond, ref]
         if return_first_stage_outputs:
-            # xrec = self.first_stage_model.decode(z)
             xrec = self.decode_first_stage(z)
             out.extend([x, xrec])
-        if return_original_cond:
-            out.append(cond)
         return out
 
     def training_step(self, batch, **kwargs):
@@ -758,7 +747,7 @@ class LatentDiffusion(DDPM):
         target1 = C
         target2 = noise
         target3 = x_start
-        # loss_simple = 0.
+        loss = 0.
         # loss_vlb = 0.
         # use l1 + l2
         # if self.weighting_loss:
@@ -788,7 +777,7 @@ class LatentDiffusion(DDPM):
         #                    simple_weight2 * (noise_pred - target2).abs().sum([1, 2, 3])
         #     loss_simple = loss_simple / 2
         # loss = loss_simple.sum() / C.shape[0]
-        loss = loss_simple
+        loss += loss_simple
         # rec_weight = -torch.log(t.reshape(C.shape[0], 1)) / 2
         # rec_weight = 2 * (1 - t.reshape(C.shape[0], 1)) ** 2
         # loss_vlb += (x_rec - target3).abs().sum([1, 2, 3]) * rec_weight
@@ -810,7 +799,7 @@ class LatentDiffusion(DDPM):
         # loss = loss_simple.sum() / C.shape[0] + loss_vlb.sum() / C.shape[0]
 
         ## Segmentation loss
-        if cond['c_concat'] is not None:
+        if cond is not None:
             img_rec = self.decode_first_stage(x_rec)
             loss_seg = self.loss_seg_func(img_rec, img_ori, rec_weight)
             loss += loss_seg
@@ -823,7 +812,7 @@ class LatentDiffusion(DDPM):
             f'{prefix}/loss_simple': loss_simple.detach(),
             f'{prefix}/loss_vlb': loss_vlb.detach()
             })
-        if cond['c_concat'] is not None:
+        if cond is not None:
             loss_dict.update({f'{prefix}/loss_seg': loss_seg.detach()})
         # loss_dict.update({f'{prefix}/loss': loss.detach().sum() / C.shape[0] / C.shape[1] / C.shape[2] / C.shape[3]})
         loss_dict.update({f'{prefix}/loss': loss.detach()})
