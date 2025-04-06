@@ -795,14 +795,14 @@ class LatentDiffusion(DDPM):
             loss_vlb += loss_distill  # .mean()
 
         # loss += loss_vlb.sum() / C.shape[0]
-        loss += loss_vlb
+        # loss += loss_vlb
         # loss = loss_simple.sum() / C.shape[0] + loss_vlb.sum() / C.shape[0]
 
         ## Segmentation loss
         if cond is not None:
             img_rec = self.decode_first_stage(x_rec)
             loss_seg = self.loss_seg_func(img_rec, img_ori, rec_weight)
-            loss += loss_seg
+            loss += loss_seg * 0.3
 
         # loss_dict.update(
         #     {f'{prefix}/loss_simple': loss_simple.detach().sum() / C.shape[0] / C.shape[1] / C.shape[2] / C.shape[3]})
@@ -810,7 +810,7 @@ class LatentDiffusion(DDPM):
         #     {f'{prefix}/loss_vlb': loss_vlb.detach().sum() / C.shape[0] / C.shape[1] / C.shape[2] / C.shape[3]})
         loss_dict.update({
             f'{prefix}/loss_simple': loss_simple.detach(),
-            f'{prefix}/loss_vlb': loss_vlb.detach()
+            # f'{prefix}/loss_vlb': loss_vlb.detach()
             })
         if cond is not None:
             loss_dict.update({f'{prefix}/loss_seg': loss_seg.detach()})
