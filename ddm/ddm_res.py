@@ -779,9 +779,9 @@ class LatentDiffusion(DDPM):
         loss += loss_simple
 
         ## l1 loss
-        loss_vlb = (res_rec - target3).abs()* rec_weight
-        loss_vlb = loss_vlb.mean()
-        loss += loss_vlb
+        # loss_vlb = (res_rec - target3).abs()* rec_weight
+        # loss_vlb = loss_vlb.mean()
+        # loss += loss_vlb
 
         ## Segmentation loss
         if cond is not None:
@@ -791,7 +791,7 @@ class LatentDiffusion(DDPM):
 
         loss_dict.update({
             f'{prefix}/loss_simple': loss_simple.detach(),
-            f'{prefix}/loss_vlb': loss_vlb.detach()
+            # f'{prefix}/loss_vlb': loss_vlb.detach()
             })
         if cond is not None:
             loss_dict.update({f'{prefix}/loss_seg': loss_seg.detach()})
