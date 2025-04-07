@@ -771,11 +771,13 @@ class LatentDiffusion(DDPM):
         layer_pixel = ((img_ori > 0.99) & (img_ori < 1.01)).sum(dim=(2, 3))    # calculate the sum of pixel values of each layer
         weights = torch.log(total_pixel / (layer_pixel + 1e-3))  # [bs, 4]
         weights = weights ** 2
-        rec_weight = weights.view(bs, num_layers, 1, 1)     # # [bs, 4]->[bs, 4, 1, 1]
+        normalized_weights = weights / (weights.sum(dim=1, keepdim=True) + 1e-6)
+        rec_weight = normalized_weights.view(bs, num_layers, 1, 1)     # # [bs, 4]->[bs, 4, 1, 1]
         
         ## l2 loss
         loss_simple = self.loss_main_func(C_pred, target1, rec_weight) + \
                         self.loss_main_func(noise_pred, target2, rec_weight)
+        loss_simple = loss_simple * 3
         loss += loss_simple
 
         ## l1 loss
