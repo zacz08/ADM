@@ -565,6 +565,8 @@ class LatentDiffusion(DDPM):
             self.instantiate_first_stage(first_stage_config)
         # self.instantiate_cond_stage(cond_stage_config)
 
+        self.training_stage = kwargs.get('training_stage', 'default')
+
 
     def instantiate_first_stage(self, config):
         model = instantiate_from_config(config)
@@ -773,34 +775,13 @@ class LatentDiffusion(DDPM):
         ## l2 loss
         loss_simple = self.loss_main_func(C_pred, target1, rec_weight) + \
                         self.loss_main_func(noise_pred, target2, rec_weight)
-        # loss_simple = loss_simple * rec_weight
-        # if self.use_l1:
-        #     loss_simple += simple_weight1 * (C_pred - target1).abs().sum([1, 2, 3]) + \
-        #                    simple_weight2 * (noise_pred - target2).abs().sum([1, 2, 3])
-        #     loss_simple = loss_simple / 2
-        # loss = loss_simple.sum() / C.shape[0]
         loss += loss_simple
-        # rec_weight = -torch.log(t.reshape(C.shape[0], 1)) / 2
-        # rec_weight = 2 * (1 - t.reshape(C.shape[0], 1)) ** 2
         
         ## l1 loss
-        # loss_vlb += (x_rec - target3).abs().sum([1, 2, 3]) * rec_weight
-        loss_vlb = (x_rec - target3).abs()* rec_weight
-        loss_vlb = loss_vlb.mean()
-        if self.cfg.get('use_disloss', False):
-            with torch.no_grad():
-                # img_rec = self.first_stage_model.decode(x_rec / self.scale_factor)
-                img_rec = self.decode_first_stage(x_rec)
-                img_rec = torch.clamp(img_rec, min=-1., max=1.)  # B, 1, 320, 320
-            loss_tmp = (img_rec - kwargs['ori_input']).sum([1, 2, 3]) * rec_weight  # B, 1
-            if self.perceptual_weight > 0.:
-                loss_tmp += self.perceptual_loss(img_rec, kwargs['ori_input']).sum([1, 2, 3]) * rec_weight
-            loss_distill = SpecifyGradient.apply(x_rec, loss_tmp.mean())
-            loss_vlb += loss_distill  # .mean()
-
-        # loss += loss_vlb.sum() / C.shape[0]
-        # loss += loss_vlb
-        # loss = loss_simple.sum() / C.shape[0] + loss_vlb.sum() / C.shape[0]
+        if getattr(self, 'training_stage', None) == 'unet':
+            loss_vlb = (x_rec - target3).abs()* rec_weight
+            loss_vlb = loss_vlb.mean()
+            loss += loss_vlb
 
         ## Segmentation loss
         if cond is not None:
@@ -812,10 +793,11 @@ class LatentDiffusion(DDPM):
         #     {f'{prefix}/loss_simple': loss_simple.detach().sum() / C.shape[0] / C.shape[1] / C.shape[2] / C.shape[3]})
         # loss_dict.update(
         #     {f'{prefix}/loss_vlb': loss_vlb.detach().sum() / C.shape[0] / C.shape[1] / C.shape[2] / C.shape[3]})
-        loss_dict.update({
-            f'{prefix}/loss_simple': loss_simple.detach(),
-            # f'{prefix}/loss_vlb': loss_vlb.detach()
-            })
+        loss_dict.update({f'{prefix}/loss_simple': loss_simple.detach()})
+        
+        if getattr(self, 'training_stage', None) == 'unet':
+            loss_dict.update({f'{prefix}/loss_vlb': loss_vlb.detach()})
+
         if cond is not None:
             loss_dict.update({f'{prefix}/loss_seg': loss_seg.detach()})
         # loss_dict.update({f'{prefix}/loss': loss.detach().sum() / C.shape[0] / C.shape[1] / C.shape[2] / C.shape[3]})

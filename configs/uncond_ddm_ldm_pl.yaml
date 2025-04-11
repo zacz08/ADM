@@ -23,6 +23,7 @@ model:
     use_augment: False
     use_ema: False
     # conditioning_key: crossattn
+    training_stage: unet
 
     first_stage_config:
       target: ldm.models.autoencoder_retrain.AutoencoderKL
