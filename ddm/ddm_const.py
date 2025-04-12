@@ -706,7 +706,7 @@ class LatentDiffusion(DDPM):
 
     def training_step(self, batch, **kwargs):
 
-        loss, loss_dict = self.shared_step(batch, **kwargs)
+        loss, loss_dict = self.shared_step(batch, prefix='train', **kwargs)
 
         self.log_dict(loss_dict, prog_bar=True,
                       logger=True, on_step=True, on_epoch=True)
@@ -719,6 +719,10 @@ class LatentDiffusion(DDPM):
             self.log('lr_abs', lr, prog_bar=True, logger=True, on_step=True, on_epoch=False)
 
         return loss
+    
+    def validation_step(self, batch, **kwargs):
+        loss, loss_dict = self.shared_step(batch, prefix='val', **kwargs)
+        self.log_dict(loss_dict, prog_bar=True, logger=True, on_epoch=True)
 
     def predict_step(self, batch):
         pass
@@ -745,7 +749,7 @@ class LatentDiffusion(DDPM):
         C_pred, noise_pred = self.apply_model(x_noisy, t, cond, **kwargs)
         x_rec = self.pred_x0_from_xt(x_noisy, noise_pred, C_pred, t)
         loss_dict = {}
-        prefix = 'train'
+        prefix = kwargs.get('prefix', 'train')
 
         target1 = C
         target2 = noise
