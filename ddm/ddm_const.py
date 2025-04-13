@@ -3,17 +3,17 @@ import math
 import torch.nn.functional as F
 from torch.amp import custom_bwd, custom_fwd
 from contextlib import contextmanager
-from .utils import default, identity, normalize_to_neg_one_to_one, unnormalize_to_zero_to_one, construct_class_by_name
+from .utils import default, unnormalize_to_zero_to_one, construct_class_by_name
 from einops import rearrange, repeat
 from torchvision.utils import make_grid
-from random import random, randint, sample, choice
+# from random import random, randint, sample, choice
 # from .encoder_decoder import DiagonalGaussianDistribution
 from ldm.modules.distributions.distributions import DiagonalGaussianDistribution
 
 from taming.modules.losses.vqperceptual import *
 from .augment import AugmentPipe
-from .loss import *
-import numpy as np
+# from .loss import *
+# import numpy as np
 from ldm.util import instantiate_from_config
 from ldm.modules.ema import LitEma
 import pytorch_lightning as pl
@@ -107,7 +107,7 @@ class DDPM(pl.LightningModule):
         reference_key=None,
         start_dist='normal',
         sample_type='deterministic',
-        perceptual_weight=1.,
+        # perceptual_weight=1.,
         use_l1=False,
         use_ema=True,
         **kwargs
@@ -167,11 +167,11 @@ class DDPM(pl.LightningModule):
         # loss_vlb_cfg = self.cfg.get('loss_vlb', loss_vlb_cfg_default)
         self.loss_main_func = construct_class_by_name(**loss_main_cfg)
         # self.loss_vlb_func = construct_class_by_name(**loss_vlb_cfg)
-        self.use_l1 = use_l1
+        # self.use_l1 = use_l1
 
-        self.perceptual_weight = perceptual_weight
-        if self.perceptual_weight > 0:
-            self.perceptual_loss = LPIPS().eval()
+        # self.perceptual_weight = perceptual_weight
+        # if self.perceptual_weight > 0:
+        #     self.perceptual_loss = LPIPS().eval()
 
         self.use_augment = self.cfg.get('use_augment', False)
         if self.use_augment:
@@ -323,20 +323,20 @@ class DDPM(pl.LightningModule):
         loss_dict.update({f'{prefix}/loss': loss.detach().sum() / C.shape[0] / C.shape[1] / C.shape[2] / C.shape[3]})
         return loss, loss_dict
 
-    def get_loss(self, pred, target, mean=True):
-        if self.loss_type == 'l1':
-            loss = (target - pred).abs()
-            if mean:
-                loss = loss.mean()
-        elif self.loss_type == 'l2':
-            if mean:
-                loss = torch.nn.functional.mse_loss(target, pred)
-            else:
-                loss = torch.nn.functional.mse_loss(target, pred, reduction='none')
-        else:
-            raise NotImplementedError("unknown loss type '{loss_type}'")
+    # def get_loss(self, pred, target, mean=True):
+    #     if self.loss_type == 'l1':
+    #         loss = (target - pred).abs()
+    #         if mean:
+    #             loss = loss.mean()
+    #     elif self.loss_type == 'l2':
+    #         if mean:
+    #             loss = torch.nn.functional.mse_loss(target, pred)
+    #         else:
+    #             loss = torch.nn.functional.mse_loss(target, pred, reduction='none')
+    #     else:
+    #         raise NotImplementedError("unknown loss type '{loss_type}'")
 
-        return loss
+    #     return loss
 
     @torch.no_grad()
     def sample(self, batch_size=16, up_scale=1, cond=None, denoise=True):
@@ -708,11 +708,9 @@ class LatentDiffusion(DDPM):
 
         loss, loss_dict = self.shared_step(batch, prefix='train', **kwargs)
 
-        self.log_dict(loss_dict, prog_bar=True,
-                      logger=True, on_step=True, on_epoch=True)
+        self.log_dict(loss_dict, prog_bar=True, logger=True, on_step=True, on_epoch=True, sync_dist=True)
 
-        self.log("global_step", self.global_step,
-                 prog_bar=True, logger=True, on_step=True, on_epoch=False)
+        self.log("global_step", self.global_step, prog_bar=True, logger=True, on_step=True, on_epoch=False)
 
         if self.use_scheduler:
             lr = self.optimizers().param_groups[0]['lr']
@@ -722,7 +720,7 @@ class LatentDiffusion(DDPM):
     
     def validation_step(self, batch, **kwargs):
         loss, loss_dict = self.shared_step(batch, prefix='val', **kwargs)
-        self.log_dict(loss_dict, prog_bar=True, logger=True, on_epoch=True)
+        self.log_dict(loss_dict, prog_bar=True, logger=True, on_epoch=True, sync_dist=True)
 
     def predict_step(self, batch):
         pass
@@ -810,20 +808,20 @@ class LatentDiffusion(DDPM):
 
         return loss, loss_dict
 
-    def get_loss(self, pred, target, mean=True):
-        if self.loss_type == 'l1':
-            loss = (target - pred).abs()
-            if mean:
-                loss = loss.mean()
-        elif self.loss_type == 'l2':
-            if mean:
-                loss = torch.nn.functional.mse_loss(target, pred)
-            else:
-                loss = torch.nn.functional.mse_loss(target, pred, reduction='none')
-        else:
-            raise NotImplementedError("unknown loss type '{loss_type}'")
+    # def get_loss(self, pred, target, mean=True):
+    #     if self.loss_type == 'l1':
+    #         loss = (target - pred).abs()
+    #         if mean:
+    #             loss = loss.mean()
+    #     elif self.loss_type == 'l2':
+    #         if mean:
+    #             loss = torch.nn.functional.mse_loss(target, pred)
+    #         else:
+    #             loss = torch.nn.functional.mse_loss(target, pred, reduction='none')
+    #     else:
+    #         raise NotImplementedError("unknown loss type '{loss_type}'")
 
-        return loss
+    #     return loss
     
     @torch.no_grad()
     def decode_first_stage(self, z, predict_cids=False, force_not_quantize=False):
