@@ -19,6 +19,8 @@ from ldm.modules.ema import LitEma
 from ldm.models.autoencoder_retrain import compute_rec_weights
 import pytorch_lightning as pl
 from ldm.models.autoencoder_retrain import SegmentationLoss
+from tutorial_dataset_bev_small import MyDataset
+from torch.utils.data import DataLoader
 
 # xt = x0 + ct + \epsilon * t.sqrt()
 
@@ -127,7 +129,8 @@ class DDPM(pl.LightningModule):
         self.first_stage_key = first_stage_key
         self.reference_key = reference_key
         self.cfg = kwargs
-        self.opt_cfg = kwargs.get('trainer_cfg', None)
+        self.opt_cfg = kwargs.get('trainer_config', None)
+        self.data_cfg = kwargs.get('data_config', None)
 
         self.use_ema = use_ema
         if self.use_ema:
@@ -212,6 +215,24 @@ class DDPM(pl.LightningModule):
             print(f"Missing Keys: {missing}")
         if len(unexpected) > 0:
             print(f"Unexpected Keys: {unexpected}")
+
+    def train_dataloader(self):
+        dataset = MyDataset(data_split=self.data_cfg['data_split_train'], 
+                            augment=self.data_cfg['augment'])
+        
+        return DataLoader(dataset, 
+                          batch_size=self.data_cfg['batch_size'], 
+                          shuffle=True, 
+                          num_workers=4, 
+                          persistent_workers=True)
+    
+    def val_dataloader(self):
+        dataset = MyDataset(data_split=self.data_cfg['data_split_val'])
+        
+        return DataLoader(dataset, 
+                          batch_size=self.data_cfg['batch_size'], 
+                          num_workers=2, 
+                          persistent_workers=True)
     
     def get_input(self, batch, k):
         x = batch[k]
@@ -621,38 +642,58 @@ class LatentDiffusion(DDPM):
         # return self.scale_factor * z.detach() + self.scale_bias
         return self.scale_factor * z.detach()
     
+    # def setup(self, stage=None):
+    #     if stage == 'fit':
+    #         train_loader = self.train_dataloader()
+    #         # dataset_size = len(train_loader.dataset)
+    #         # batch_size = train_loader.batch_size
+    #         steps_per_epoch = len(train_loader)
+    #         num_epochs = self.trainer.max_epochs
+    #         self.total_steps = steps_per_epoch * num_epochs
+    #         self.warmup_steps = int(0.05 * self.total_steps)
+
     def configure_optimizers(self):
 
-        # filter out parameters that do not require gradients
+        base_lr = self.opt_cfg.get("lr", 5e-5)
+        min_lr = self.opt_cfg.get("min_lr", 1e-7)
+        weight_decay = self.opt_cfg.get("weight_decay", 1e-4)
+
+        train_loader = self.train_dataloader()
+        steps_per_epoch = len(train_loader)
+        num_epochs = self.trainer.max_epochs
+        total_steps = steps_per_epoch * num_epochs
+        warmup_steps = int(0.05 * total_steps)
+
         optimizer = torch.optim.AdamW(
             filter(lambda p: p.requires_grad, self.parameters()),
-            lr=self.opt_cfg.get('lr', 5e-5),  
-            weight_decay=self.opt_cfg.get('weight_decay', 1e-4),
+            lr=base_lr,
+            weight_decay=weight_decay
         )
 
-        # # WarmUp + cosine learning rate scheduler
-        # def WarmUpLrScheduler(iter):
-        #     warmup_iter = self.opt_cfg.get('warmup_iter', 5000)  # read from config
-        #     if iter <= warmup_iter:
-        #         ratio = (iter + 1) / warmup_iter
-        #     else:
-        #         ratio = max((1 - (iter - warmup_iter) / self.opt_cfg.get('train_num_steps', 10000)) ** 0.96,
-        #                     self.opt_cfg.get('min_lr', 1e-7) / self.opt_cfg.get('lr', 5e-5))
-        #     return ratio
+        # scheduler (linear warmup + cosine decay)
+        def lr_lambda(current_step):
+            if current_step <= warmup_steps:
+                return float(current_step + 1) / float(warmup_steps)
+            else:
+                decay_step = current_step - warmup_steps
+                decay_total = max(total_steps - warmup_steps, 1)
+                decay_ratio = (1.0 - decay_step / decay_total) ** 0.96
+                min_ratio = min_lr / base_lr
+                return max(decay_ratio, min_ratio)
 
-        # # learning rate scheduler
-        # lr_scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=WarmUpLrScheduler)
+        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
 
-        # return {
-        #     "optimizer": optimizer,
-        #     "lr_scheduler": {
-        #         "scheduler": lr_scheduler,
-        #         "interval": "step",  # update lr after each step
-        #         "frequency": 1  # called after every `interval` step
-        #     }
-        # }
+        print(f"Training steps: {total_steps}, Warmup: {warmup_steps}, Steps per epoch: {steps_per_epoch}")
 
-        return optimizer
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "interval": "step",
+                "frequency": 1,
+                "name": "warmup_cosine"
+            }
+        }
 
 
     @torch.no_grad()
