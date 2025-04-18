@@ -16,6 +16,7 @@ from .augment import AugmentPipe
 # import numpy as np
 from ldm.util import instantiate_from_config
 from ldm.modules.ema import LitEma
+from ldm.models.autoencoder_retrain import compute_rec_weights
 import pytorch_lightning as pl
 from ldm.models.autoencoder_retrain import SegmentationLoss
 
@@ -770,14 +771,15 @@ class LatentDiffusion(DDPM):
         
         ### calculate the weights for each layer
         img_ori = kwargs['batch'][self.first_stage_key].permute(0, 3, 1, 2)
-        bs, num_layers, h, w = img_ori.shape
-        total_pixel = h * w
-        layer_pixel = ((img_ori > 0.99) & (img_ori < 1.01)).sum(dim=(2, 3))    # calculate the sum of pixel values of each layer
-        weights = torch.log(total_pixel / (layer_pixel + 1e-3))  # [bs, 4]
-        weights = weights ** 2
-        normalized_weights = weights / (weights.sum(dim=1, keepdim=True) + 1e-6)
-        rec_weight = normalized_weights.view(bs, num_layers, 1, 1)     # # [bs, 4]->[bs, 4, 1, 1]
-        
+        # bs, num_layers, h, w = img_ori.shape
+        # total_pixel = h * w
+        # layer_pixel = ((img_ori > 0.99) & (img_ori < 1.01)).sum(dim=(2, 3))    # calculate the sum of pixel values of each layer
+        # weights = torch.log(total_pixel / (layer_pixel + 1e-3))  # [bs, 4]
+        # weights = weights ** 2
+        # normalized_weights = weights / (weights.sum(dim=1, keepdim=True) + 1e-6)
+        # rec_weight = normalized_weights.view(bs, num_layers, 1, 1)     # # [bs, 4]->[bs, 4, 1, 1]
+        rec_weight = compute_rec_weights(img_ori)
+
         ## l2 loss
         loss_simple = self.loss_main_func(C_pred, target1, rec_weight) + \
                         self.loss_main_func(noise_pred, target2, rec_weight)
