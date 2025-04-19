@@ -21,6 +21,7 @@ import pytorch_lightning as pl
 from ldm.models.autoencoder_retrain import SegmentationLoss
 from tutorial_dataset_bev_small import MyDataset
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 
 # xt = x0 + ct + \epsilon * t.sqrt()
 
@@ -220,17 +221,31 @@ class DDPM(pl.LightningModule):
         dataset = MyDataset(data_split=self.data_cfg['data_split_train'], 
                             augment=self.data_cfg['augment'])
         
+        if self.trainer and self.trainer.world_size > 1:
+            sampler = DistributedSampler(dataset, num_replicas=self.trainer.world_size, rank=self.trainer.global_rank, shuffle=True)
+            shuffle = False
+        else:
+            sampler = None
+            shuffle = True
+        
         return DataLoader(dataset, 
                           batch_size=self.data_cfg['batch_size'], 
-                          shuffle=True, 
+                          shuffle=shuffle, 
+                          sampler=sampler,
                           num_workers=4, 
                           persistent_workers=True)
     
     def val_dataloader(self):
         dataset = MyDataset(data_split=self.data_cfg['data_split_val'])
+
+        if self.trainer and self.trainer.world_size > 1:
+            sampler = DistributedSampler(dataset, num_replicas=self.trainer.world_size, rank=self.trainer.global_rank, shuffle=False)
+        else:
+            sampler = None
         
         return DataLoader(dataset, 
                           batch_size=self.data_cfg['batch_size'], 
+                          sampler=sampler,
                           num_workers=2, 
                           persistent_workers=True)
     
@@ -755,7 +770,12 @@ class LatentDiffusion(DDPM):
 
         if self.use_scheduler:
             lr = self.optimizers().param_groups[0]['lr']
-            self.log('lr_abs', lr, prog_bar=True, logger=True, on_step=True, on_epoch=False)
+            self.log('lr_abs', lr, prog_bar=True, logger=True, on_step=True, on_epoch=False, sync_dist=True)
+
+        if torch.isnan(loss):
+            print(f" !!!!!!!!!! NaN detected in loss at step {self.global_step} !!!!!!!!!!")
+            print(f"Step: {self.global_step}, LR: {lr}, Loss Dict: {loss_dict}")
+            raise ValueError("Training diverged due to NaN")
 
         return loss
     
