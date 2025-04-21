@@ -612,8 +612,8 @@ class LatentDiffusion(DDPM):
 
         ckpt_path = config.get('ckpt_path', None)
         if ckpt_path:
-            vae_ckpt = torch.load(ckpt_path, map_location="cpu")
-            self.first_stage_model.load_state_dict(vae_ckpt["state_dict"], strict=False)
+            vae_ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+            self.first_stage_model.load_state_dict(vae_ckpt["state_dict"])
 
         # Disable gradient update of the VAE during LDM training
         for param in self.first_stage_model.parameters():
