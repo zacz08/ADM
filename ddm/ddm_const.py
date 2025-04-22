@@ -5,7 +5,7 @@ from torch.amp import custom_bwd, custom_fwd
 from contextlib import contextmanager
 from .utils import default, unnormalize_to_zero_to_one, construct_class_by_name
 from einops import rearrange, repeat
-from torchvision.utils import make_grid
+# from torchvision.utils import make_grid
 # from random import random, randint, sample, choice
 # from .encoder_decoder import DiagonalGaussianDistribution
 from ldm.modules.distributions.distributions import DiagonalGaussianDistribution
@@ -508,12 +508,12 @@ class DDPM(pl.LightningModule):
                 if context is not None:
                     print(f"{context}: Restored training weights")
 
-    def _get_rows_from_list(self, samples):
-        n_imgs_per_row = len(samples)
-        denoise_grid = rearrange(samples, 'n b c h w -> b n c h w')
-        denoise_grid = rearrange(denoise_grid, 'b n c h w -> (b n) c h w')
-        denoise_grid = make_grid(denoise_grid, nrow=n_imgs_per_row)
-        return denoise_grid
+    # def _get_rows_from_list(self, samples):
+    #     n_imgs_per_row = len(samples)
+    #     denoise_grid = rearrange(samples, 'n b c h w -> b n c h w')
+    #     denoise_grid = rearrange(denoise_grid, 'b n c h w -> (b n) c h w')
+    #     denoise_grid = make_grid(denoise_grid, nrow=n_imgs_per_row)
+    #     return denoise_grid
     
     # @torch.no_grad()
     # def log_images(self, batch, N=8, n_row=2, sample=True, return_keys=None, **kwargs):
@@ -1062,23 +1062,23 @@ class LatentDiffusion(DDPM):
 
         log["recon_sd_input"] = self.decode_first_stage(z)    
 
-        if plot_diffusion_rows:
-            # get diffusion row
-            diffusion_row = list()
-            z_start = z[:n_row]
-            for t in range(self.num_timesteps):
-                if t % self.log_every_t == 0 or t == self.num_timesteps - 1:
-                    t = repeat(torch.tensor([t]), '1 -> b', b=n_row)
-                    t = t.to(self.device).long()
-                    noise = torch.randn_like(z_start)
-                    z_noisy = self.q_sample(x_start=z_start, t=t, noise=noise)
-                    diffusion_row.append(self.decode_first_stage(z_noisy))
+        # if plot_diffusion_rows:
+        #     # get diffusion row
+        #     diffusion_row = list()
+        #     z_start = z[:n_row]
+        #     for t in range(self.num_timesteps):
+        #         if t % self.log_every_t == 0 or t == self.num_timesteps - 1:
+        #             t = repeat(torch.tensor([t]), '1 -> b', b=n_row)
+        #             t = t.to(self.device).long()
+        #             noise = torch.randn_like(z_start)
+        #             z_noisy = self.q_sample(x_start=z_start, t=t, noise=noise)
+        #             diffusion_row.append(self.decode_first_stage(z_noisy))
 
-            diffusion_row = torch.stack(diffusion_row)  # n_log_step, n_row, C, H, W
-            diffusion_grid = rearrange(diffusion_row, 'n b c h w -> b n c h w')
-            diffusion_grid = rearrange(diffusion_grid, 'b n c h w -> (b n) c h w')
-            diffusion_grid = make_grid(diffusion_grid, nrow=diffusion_row.shape[0])
-            log["diffusion_row"] = diffusion_grid
+        #     diffusion_row = torch.stack(diffusion_row)  # n_log_step, n_row, C, H, W
+        #     diffusion_grid = rearrange(diffusion_row, 'n b c h w -> b n c h w')
+        #     diffusion_grid = rearrange(diffusion_grid, 'b n c h w -> (b n) c h w')
+        #     diffusion_grid = make_grid(diffusion_grid, nrow=diffusion_row.shape[0])
+        #     log["diffusion_row"] = diffusion_grid
 
         if sample:
             # get denoise row
