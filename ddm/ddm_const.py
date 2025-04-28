@@ -19,7 +19,8 @@ from ldm.modules.ema import LitEma
 from ldm.models.autoencoder_retrain import compute_rec_weights
 import pytorch_lightning as pl
 from ldm.models.autoencoder_retrain import SegmentationLoss
-from tutorial_dataset_bev_small import MyDataset
+# from tutorial_dataset_bev_small import MyDataset
+from nuScenesSegDataset import nuScenesSegDataset
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
@@ -218,8 +219,9 @@ class DDPM(pl.LightningModule):
             print(f"Unexpected Keys: {unexpected}")
 
     def train_dataloader(self):
-        dataset = MyDataset(data_split=self.data_cfg['data_split_train'], 
-                            augment=self.data_cfg['augment'])
+        dataset = nuScenesSegDataset(data_split=self.data_cfg['data_split_train'], 
+                                     resolution=self.data_cfg['resolution'],
+                                     augment=self.data_cfg['augment'])
         
         if self.trainer and self.trainer.world_size > 1:
             sampler = DistributedSampler(dataset, num_replicas=self.trainer.world_size, rank=self.trainer.global_rank, shuffle=True)
@@ -232,11 +234,11 @@ class DDPM(pl.LightningModule):
                           batch_size=self.data_cfg['batch_size'], 
                           shuffle=shuffle, 
                           sampler=sampler,
-                          num_workers=4, 
-                          persistent_workers=True)
+                          num_workers=self.data_cfg['num_workers'])
     
     def val_dataloader(self):
-        dataset = MyDataset(data_split=self.data_cfg['data_split_val'])
+        dataset = nuScenesSegDataset(data_split=self.data_cfg['data_split_val'],
+                                     resolution=self.data_cfg['resolution'],)
 
         if self.trainer and self.trainer.world_size > 1:
             sampler = DistributedSampler(dataset, num_replicas=self.trainer.world_size, rank=self.trainer.global_rank, shuffle=False)
@@ -245,9 +247,7 @@ class DDPM(pl.LightningModule):
         
         return DataLoader(dataset, 
                           batch_size=self.data_cfg['batch_size'], 
-                          sampler=sampler,
-                          num_workers=2, 
-                          persistent_workers=True)
+                          sampler=sampler)
     
     def get_input(self, batch, k):
         x = batch[k]
