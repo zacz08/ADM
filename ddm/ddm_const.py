@@ -829,7 +829,7 @@ class LatentDiffusion(DDPM):
         #                simple_weight2 * self.loss_main_func(noise_pred, target2, reduction='sum')
         
         ### calculate the weights for each layer
-        img_ori = kwargs['batch'][self.first_stage_key].permute(0, 3, 1, 2)
+        # img_ori = kwargs['batch'][self.first_stage_key].permute(0, 3, 1, 2)
         # bs, num_layers, h, w = img_ori.shape
         # total_pixel = h * w
         # layer_pixel = ((img_ori > 0.99) & (img_ori < 1.01)).sum(dim=(2, 3))    # calculate the sum of pixel values of each layer
@@ -837,21 +837,25 @@ class LatentDiffusion(DDPM):
         # weights = weights ** 2
         # normalized_weights = weights / (weights.sum(dim=1, keepdim=True) + 1e-6)
         # rec_weight = normalized_weights.view(bs, num_layers, 1, 1)     # # [bs, 4]->[bs, 4, 1, 1]
-        rec_weight = compute_rec_weights(img_ori)
+        # rec_weight = compute_rec_weights(img_ori)
         
         ## l2 loss
-        loss_simple = self.loss_main_func(C_pred, target1, rec_weight) + \
-                        self.loss_main_func(noise_pred, target2, rec_weight)
+        # loss_simple = self.loss_main_func(C_pred, target1, rec_weight) + \
+        #                 self.loss_main_func(noise_pred, target2, rec_weight)
+        loss_simple = F.mse_loss(C_pred, target1, reduction='mean') + \
+                        F.mse_loss(noise_pred, target2, reduction='mean')
         loss += loss_simple
         
         ## l1 loss
         if getattr(self, 'training_stage', None) == 'unet':
-            loss_vlb = (x_rec - target3).abs()* rec_weight
-            loss_vlb = loss_vlb.mean()
+            loss_vlb = (x_rec - target3).abs().mean()
+            # loss_vlb = loss_vlb.mean()
             loss += loss_vlb
 
         ## Segmentation loss
         if cond is not None:
+            img_ori = kwargs['batch'][self.first_stage_key].permute(0, 3, 1, 2)
+            rec_weight = compute_rec_weights(img_ori)
             img_rec = self.decode_first_stage(x_rec)
             loss_seg = self.loss_seg_func(img_rec, img_ori, rec_weight)
             loss += loss_seg * 0.3
