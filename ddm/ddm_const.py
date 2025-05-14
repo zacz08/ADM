@@ -1,5 +1,7 @@
 import torch
 import math
+import os
+import csv
 import torch.nn.functional as F
 from torch.amp import custom_bwd, custom_fwd
 from contextlib import contextmanager
@@ -23,6 +25,7 @@ from ldm.models.autoencoder_retrain import SegmentationLoss
 from nuScenesSegDataset import nuScenesSegDataset
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
+from tools.training_log_analysis import parse_csv_and_plot
 
 # xt = x0 + ct + \epsilon * t.sqrt()
 
@@ -711,6 +714,41 @@ class LatentDiffusion(DDPM):
                 "name": "warmup_cosine"
             }
         }
+
+
+    @torch.no_grad()
+    def on_train_epoch_end(self):
+        metrics = self.trainer.callback_metrics  # All logged metrics
+        epoch = int(self.current_epoch)
+
+        fields = [
+            "train/loss_epoch",
+            "train/loss_simple_epoch",
+            "train/loss_vlb_epoch",
+            "train/loss_seg_epoch",
+            "val/loss",
+            "val/loss_simple",
+            "val/loss_vlb",
+            "val/loss_seg"
+        ]
+
+        row = {"epoch": epoch}
+        for key in fields:
+            val = metrics.get(key)
+            row[key] = val.item() if val is not None else None
+
+        # Write to CSV
+        csv_file = os.path.join(self.logger.log_dir, "train_log.csv")
+        file_exists = os.path.exists(csv_file)
+        with open(csv_file, mode='a', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=["epoch"] + fields)
+            if not file_exists:
+                writer.writeheader()
+            writer.writerow({k: ("" if v is None else f"{v:.3f}") for k, v in row.items()})
+
+        # Draw learning curve
+        learning_curve = os.path.join(self.logger.log_dir, "loss_plot.png")
+        parse_csv_and_plot(csv_file, learning_curve)
 
 
     @torch.no_grad()
