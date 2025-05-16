@@ -513,52 +513,6 @@ class DDPM(pl.LightningModule):
                 if context is not None:
                     print(f"{context}: Restored training weights")
 
-    # def _get_rows_from_list(self, samples):
-    #     n_imgs_per_row = len(samples)
-    #     denoise_grid = rearrange(samples, 'n b c h w -> b n c h w')
-    #     denoise_grid = rearrange(denoise_grid, 'b n c h w -> (b n) c h w')
-    #     denoise_grid = make_grid(denoise_grid, nrow=n_imgs_per_row)
-    #     return denoise_grid
-    
-    # @torch.no_grad()
-    # def log_images(self, batch, N=8, n_row=2, sample=True, return_keys=None, **kwargs):
-    #     log = dict()
-    #     x = self.get_input(batch, self.first_stage_key)
-    #     N = min(x.shape[0], N)
-    #     n_row = min(x.shape[0], n_row)
-    #     x = x.to(self.device)[:N]
-    #     log["inputs"] = x
-
-    #     # get diffusion row
-    #     diffusion_row = list()
-    #     x_start = x[:n_row]
-
-    #     for t in range(self.num_timesteps):
-    #         if t % self.log_every_t == 0 or t == self.num_timesteps - 1:
-    #             t = repeat(torch.tensor([t]), '1 -> b', b=n_row)
-    #             t = t.to(self.device).long()
-    #             noise = torch.randn_like(x_start)
-    #             x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
-    #             diffusion_row.append(x_noisy)
-
-    #     log["diffusion_row"] = self._get_rows_from_list(diffusion_row)
-
-    #     if sample:
-    #         # get denoise row
-    #         with self.ema_scope("Plotting"):
-    #             samples, denoise_row = self.sample(batch_size=N, return_intermediates=True)
-
-    #         log["samples"] = samples
-    #         log["denoise_row"] = self._get_rows_from_list(denoise_row)
-
-    #     if return_keys:
-    #         if np.intersect1d(list(log.keys()), return_keys).shape[0] == 0:
-    #             return log
-    #         else:
-    #             return {key: log[key] for key in return_keys}
-    #     return log
-
-
 
 class LatentDiffusion(DDPM):
     def __init__(self,
@@ -726,10 +680,14 @@ class LatentDiffusion(DDPM):
             "train/loss_simple_epoch",
             "train/loss_vlb_epoch",
             "train/loss_seg_epoch",
+            "train/loss_c_epoch",
+            "train/loss_o_epoch",
             "val/loss",
             "val/loss_simple",
             "val/loss_vlb",
-            "val/loss_seg"
+            "val/loss_seg",
+            "val/loss_c",
+            "val/loss_o"
         ]
 
         row = {"epoch": epoch}
@@ -1091,12 +1049,7 @@ class LatentDiffusion(DDPM):
     
 
     @torch.no_grad()
-    def log_images(self, batch, N=4, n_row=2, sample=True, ddim_steps=50, ddim_eta=0.0, return_keys=None,
-                   quantize_denoised=True, inpaint=True, plot_denoise_rows=False, plot_progressive_rows=True,
-                   plot_diffusion_rows=False, unconditional_guidance_scale=1.0, unconditional_guidance_label=None,
-                   use_ema_scope=True, val_sample_input=None,
-                   **kwargs):
-        use_ddim = ddim_steps is not None
+    def log_images(self, batch, N=4, n_row=2, sample=True,**kwargs):
 
         log = dict()
         z, c, ref = self.get_input(batch, self.first_stage_key, bs=N)
@@ -1106,29 +1059,7 @@ class LatentDiffusion(DDPM):
 
         log["recon_sd_input"] = self.decode_first_stage(z)    
 
-        # if plot_diffusion_rows:
-        #     # get diffusion row
-        #     diffusion_row = list()
-        #     z_start = z[:n_row]
-        #     for t in range(self.num_timesteps):
-        #         if t % self.log_every_t == 0 or t == self.num_timesteps - 1:
-        #             t = repeat(torch.tensor([t]), '1 -> b', b=n_row)
-        #             t = t.to(self.device).long()
-        #             noise = torch.randn_like(z_start)
-        #             z_noisy = self.q_sample(x_start=z_start, t=t, noise=noise)
-        #             diffusion_row.append(self.decode_first_stage(z_noisy))
-
-        #     diffusion_row = torch.stack(diffusion_row)  # n_log_step, n_row, C, H, W
-        #     diffusion_grid = rearrange(diffusion_row, 'n b c h w -> b n c h w')
-        #     diffusion_grid = rearrange(diffusion_grid, 'b n c h w -> (b n) c h w')
-        #     diffusion_grid = make_grid(diffusion_grid, nrow=diffusion_row.shape[0])
-        #     log["diffusion_row"] = diffusion_grid
-
         if sample:
-            # get denoise row
-            # samples, z_denoise_row = self.sample_log(cond={"c_concat": [c_cat], "c_crossattn": [c]},
-            #                                          batch_size=N, ddim=use_ddim,
-            #                                          ddim_steps=ddim_steps, eta=ddim_eta)
             samples = self.sample(batch_size=N)
             # x_samples = self.decode_first_stage(samples)
             log["samples"] = samples
@@ -1149,31 +1080,3 @@ class SpecifyGradient(torch.autograd.Function):
         (gt_grad,) = ctx.saved_tensors
         gt_grad = gt_grad * grad_scale
         return gt_grad, None
-
-if __name__ == "__main__":
-    ddconfig = {'double_z': True,
-                'z_channels': 4,
-                'resolution': (240, 960),
-                'in_channels': 3,
-                'out_ch': 3,
-                'ch': 128,
-                'ch_mult': [1, 2, 4, 4],  # num_down = len(ch_mult)-1
-                'num_res_blocks': 2,
-                'attn_resolutions': [],
-                'dropout': 0.0}
-    lossconfig = {'disc_start': 50001,
-                  'kl_weight': 0.000001,
-                  'disc_weight': 0.5}
-    from encoder_decoder import AutoencoderKL
-    auto_encoder = AutoencoderKL(ddconfig, lossconfig, embed_dim=4,
-                                 )
-    from mask_cond_unet import Unet
-    unet = Unet(dim=64, dim_mults=(1, 2, 4, 8), channels=4, cond_in_dim=1,)
-    ldm = LatentDiffusion(auto_encoder=auto_encoder, model=unet, image_size=ddconfig['resolution'])
-    image = torch.rand(1, 3, 128, 128)
-    mask = torch.rand(1, 1, 128, 128)
-    input = {'image': image, 'cond': mask}
-    time = torch.tensor([1])
-    with torch.no_grad():
-        y = ldm.training_step(input)
-    pass
