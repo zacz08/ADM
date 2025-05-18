@@ -7,22 +7,14 @@ from torch.amp import custom_bwd, custom_fwd
 from contextlib import contextmanager
 from .utils import default, unnormalize_to_zero_to_one, construct_class_by_name
 from einops import rearrange, repeat
-# from torchvision.utils import make_grid
-# from random import random, randint, sample, choice
-# from .encoder_decoder import DiagonalGaussianDistribution
 from ldm.modules.distributions.distributions import DiagonalGaussianDistribution
-
-# from taming.modules.losses.vqperceptual import *
 from .augment import AugmentPipe
-# from .loss import *
-# import numpy as np
 from ldm.util import instantiate_from_config
 from ldm.modules.ema import LitEma
 from ldm.models.autoencoder_retrain import compute_rec_weights
 from cldm.loss import compute_layer_weights
 import pytorch_lightning as pl
-from ldm.models.autoencoder_retrain import SegmentationLoss
-# from tutorial_dataset_bev_small import MyDataset
+from cldm.loss import SegmentationLoss
 from nuScenesSegDataset import nuScenesSegDataset
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
@@ -587,25 +579,6 @@ class LatentDiffusion(DDPM):
             if m.bias is not None:
                 torch.nn.init.zeros_(m.bias)
 
-    '''
-    def init_from_ckpt(self, path, ignore_keys=list(), only_model=False):
-        sd = torch.load(path, map_location="cpu")
-        if "state_dict" in list(sd.keys()):
-            sd = sd["state_dict"]
-        keys = list(sd.keys())
-        for k in keys:
-            for ik in ignore_keys:
-                if k.startswith(ik):
-                    print("Deleting key {} from state_dict.".format(k))
-                    del sd[k]
-        missing, unexpected = self.load_state_dict(sd, strict=False) if not only_model else self.model.load_state_dict(
-            sd, strict=False)
-        print(f"Restored from {path} with {len(missing)} missing and {len(unexpected)} unexpected keys")
-        if len(missing) > 0:
-            print(f"Missing Keys: {missing}")
-        if len(unexpected) > 0:
-            print(f"Unexpected Keys: {unexpected}")
-    '''
 
     def get_first_stage_encoding(self, encoder_posterior):
         if isinstance(encoder_posterior, DiagonalGaussianDistribution):
@@ -617,15 +590,6 @@ class LatentDiffusion(DDPM):
         # return self.scale_factor * z.detach() + self.scale_bias
         return self.scale_factor * z.detach()
     
-    # def setup(self, stage=None):
-    #     if stage == 'fit':
-    #         train_loader = self.train_dataloader()
-    #         # dataset_size = len(train_loader.dataset)
-    #         # batch_size = train_loader.batch_size
-    #         steps_per_epoch = len(train_loader)
-    #         num_epochs = self.trainer.max_epochs
-    #         self.total_steps = steps_per_epoch * num_epochs
-    #         self.warmup_steps = int(0.05 * self.total_steps)
 
     def configure_optimizers(self):
 
@@ -858,10 +822,6 @@ class LatentDiffusion(DDPM):
             loss_seg = self.loss_seg_func(img_rec, img_ori, rec_weight)
             loss += loss_seg * 0.3
 
-        # loss_dict.update(
-        #     {f'{prefix}/loss_simple': loss_simple.detach().sum() / C.shape[0] / C.shape[1] / C.shape[2] / C.shape[3]})
-        # loss_dict.update(
-        #     {f'{prefix}/loss_vlb': loss_vlb.detach().sum() / C.shape[0] / C.shape[1] / C.shape[2] / C.shape[3]})
         loss_dict.update({f'{prefix}/loss_simple': loss_simple.detach()})
         
         if getattr(self, 'training_stage', None) == 'unet':
@@ -869,25 +829,11 @@ class LatentDiffusion(DDPM):
 
         if cond is not None:
             loss_dict.update({f'{prefix}/loss_seg': loss_seg.detach()})
-        # loss_dict.update({f'{prefix}/loss': loss.detach().sum() / C.shape[0] / C.shape[1] / C.shape[2] / C.shape[3]})
+
         loss_dict.update({f'{prefix}/loss': loss.detach()})
 
         return loss, loss_dict
 
-    # def get_loss(self, pred, target, mean=True):
-    #     if self.loss_type == 'l1':
-    #         loss = (target - pred).abs()
-    #         if mean:
-    #             loss = loss.mean()
-    #     elif self.loss_type == 'l2':
-    #         if mean:
-    #             loss = torch.nn.functional.mse_loss(target, pred)
-    #         else:
-    #             loss = torch.nn.functional.mse_loss(target, pred, reduction='none')
-    #     else:
-    #         raise NotImplementedError("unknown loss type '{loss_type}'")
-
-    #     return loss
     
     @torch.no_grad()
     def decode_first_stage(self, z, predict_cids=False, force_not_quantize=False):
