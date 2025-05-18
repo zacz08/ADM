@@ -19,6 +19,7 @@ from .augment import AugmentPipe
 from ldm.util import instantiate_from_config
 from ldm.modules.ema import LitEma
 from ldm.models.autoencoder_retrain import compute_rec_weights
+from cldm.loss import compute_layer_weights
 import pytorch_lightning as pl
 from ldm.models.autoencoder_retrain import SegmentationLoss
 # from tutorial_dataset_bev_small import MyDataset
@@ -851,7 +852,8 @@ class LatentDiffusion(DDPM):
         ## Segmentation loss
         if cond is not None:
             img_ori = kwargs['batch'][self.first_stage_key].permute(0, 3, 1, 2)
-            rec_weight = compute_rec_weights(img_ori)
+            # rec_weight = compute_rec_weights(img_ori)
+            rec_weight = compute_layer_weights(img_ori)
             img_rec = self.decode_first_stage(x_rec)
             loss_seg = self.loss_seg_func(img_rec, img_ori, rec_weight)
             loss += loss_seg * 0.3
