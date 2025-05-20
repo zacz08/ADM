@@ -743,6 +743,13 @@ class LatentDiffusion(DDPM):
         return loss
     
     def validation_step(self, batch, **kwargs):
+        val_epoch = self.opt_cfg.get('val_after_epoch', 0)
+
+        if self.current_epoch < val_epoch:
+            self.log("val/loss", torch.tensor(float("nan"), device=self.device), 
+                     prog_bar=True, logger=True, on_epoch=True, sync_dist=True)
+            return
+        
         loss, loss_dict = self.shared_step(batch, prefix='val', **kwargs)
         self.log_dict(loss_dict, prog_bar=True, logger=True, on_epoch=True, sync_dist=True)
 
