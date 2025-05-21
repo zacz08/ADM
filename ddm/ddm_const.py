@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from torch.amp import custom_bwd, custom_fwd
 from contextlib import contextmanager
 from .utils import default, unnormalize_to_zero_to_one, construct_class_by_name
-from einops import rearrange, repeat
+from einops import rearrange
 from ldm.modules.distributions.distributions import DiagonalGaussianDistribution
 from .augment import AugmentPipe
 from ldm.util import instantiate_from_config
@@ -358,20 +358,6 @@ class DDPM(pl.LightningModule):
         loss_dict.update({f'{prefix}/loss': loss.detach().sum() / C.shape[0] / C.shape[1] / C.shape[2] / C.shape[3]})
         return loss, loss_dict
 
-    # def get_loss(self, pred, target, mean=True):
-    #     if self.loss_type == 'l1':
-    #         loss = (target - pred).abs()
-    #         if mean:
-    #             loss = loss.mean()
-    #     elif self.loss_type == 'l2':
-    #         if mean:
-    #             loss = torch.nn.functional.mse_loss(target, pred)
-    #         else:
-    #             loss = torch.nn.functional.mse_loss(target, pred, reduction='none')
-    #     else:
-    #         raise NotImplementedError("unknown loss type '{loss_type}'")
-
-    #     return loss
 
     @torch.no_grad()
     def sample(self, batch_size=16, up_scale=1, cond=None, denoise=True):
@@ -396,13 +382,6 @@ class DDPM(pl.LightningModule):
         # t_steps = t_steps * (1 / self.eps).round() * self.eps
         t_steps = torch.cat((t_steps, torch.tensor([0], device=device)), dim=0)
         time_steps = -torch.diff(t_steps)
-
-        # step = 1. / self.sampling_timesteps
-        # time_steps = torch.tensor([step], device=device).repeat(self.sampling_timesteps)
-        # if denoise:
-        #     eps = self.eps
-        #     time_steps = torch.cat((time_steps[:-1], torch.tensor([time_steps[-1] - eps], device=device), \
-        #                             torch.tensor([eps], device=device)), dim=0)
 
         if self.start_dist == 'normal':
             img = torch.randn(shape, device=device)
@@ -518,24 +497,11 @@ class LatentDiffusion(DDPM):
                  *args,
                  **kwargs
                  ):
-        self.scale_by_std = scale_by_std
-        self.scale_by_softsign = scale_by_softsign
-        self.default_scale = default_scale
-        # self.perceptual_weight = 0
         ckpt_path = kwargs.pop("ckpt_path", None)
         ignore_keys = kwargs.pop("ignore_keys", [])
         only_model = kwargs.pop("only_model", False)
         super().__init__(*args, **kwargs)
-        if not scale_by_std:
-            self.scale_factor = scale_factor
-        else:
-            self.register_buffer('scale_factor', torch.tensor(scale_factor))
-        if self.scale_by_softsign:
-            self.scale_by_std = False
-            print('### USING SOFTSIGN RESCALING')
-        assert (self.scale_by_std and self.scale_by_softsign) is False
-
-        # self.input_keys = input_keys
+        self.scale_factor = scale_factor
         self.clip_denoised = False
         # self.sample_type = sample_type
 
@@ -552,9 +518,6 @@ class LatentDiffusion(DDPM):
         else:
             self.apply(self.init_weights)
             self.instantiate_first_stage(first_stage_config)
-        # self.instantiate_cond_stage(cond_stage_config)
-
-        self.training_stage = kwargs.get('training_stage', 'default')
 
 
     def instantiate_first_stage(self, config):
@@ -587,7 +550,6 @@ class LatentDiffusion(DDPM):
             z = encoder_posterior
         else:
             raise NotImplementedError(f"encoder_posterior of type '{type(encoder_posterior)}' not yet implemented")
-        # return self.scale_factor * z.detach() + self.scale_bias
         return self.scale_factor * z.detach()
     
 
@@ -673,28 +635,6 @@ class LatentDiffusion(DDPM):
         learning_curve = os.path.join(self.logger.log_dir, "loss_plot.png")
         parse_csv_and_plot(csv_file, learning_curve)
 
-
-    @torch.no_grad()
-    def on_train_batch_start(self, batch, batch_idx, dataloader_idx=0):
-        # only for the first batch
-        if self.scale_by_std and self.current_epoch == 0 and self.global_step == 0 and batch_idx == 0 and (not self.scale_by_softsign):
-            if not self.default_scale:
-                assert self.scale_factor == 1., 'rather not use custom rescaling and std-rescaling simultaneously'
-                # set rescale weight to 1./std of encodings
-                print("### USING STD-RESCALING ###")
-                # x, *_ = batch.values()
-                x = super().get_input(batch, self.first_stage_key)
-                x = x.to(self.device)
-                encoder_posterior = self.first_stage_model.encode(x)
-                z = self.get_first_stage_encoding(encoder_posterior)
-                del self.scale_factor
-                self.register_buffer('scale_factor', 1. / z.flatten().std())
-                print(f"setting self.scale_factor to {self.scale_factor}")
-                # print("### USING STD-RESCALING ###")
-            else:
-                print(f'### USING DEFAULT SCALE {self.scale_factor}')
-        # else:
-        #     print(f'### USING SOFTSIGN SCALE !')
 
     @torch.no_grad()
     def get_input(self, batch, k, return_first_stage_outputs=False, bs=None):
@@ -815,28 +755,20 @@ class LatentDiffusion(DDPM):
         loss += loss_simple
         
         ## l1 loss
-        if getattr(self, 'training_stage', None) == 'unet':
-            loss_vlb = (x_rec - target3).abs().mean()
-            # loss_vlb = loss_vlb.mean()
-            loss += loss_vlb
+        loss_vlb = (x_rec - target3).abs().mean()
+        loss += loss_vlb
 
         ## Segmentation loss
-        if cond is not None:
-            img_ori = kwargs['batch'][self.first_stage_key].permute(0, 3, 1, 2)
-            # rec_weight = compute_rec_weights(img_ori)
-            rec_weight = compute_layer_weights(img_ori)
-            img_rec = self.decode_first_stage(x_rec)
-            loss_seg = self.loss_seg_func(img_rec, img_ori, rec_weight)
-            loss += loss_seg * 0.3
+        img_ori = kwargs['batch'][self.first_stage_key].permute(0, 3, 1, 2)
+        # rec_weight = compute_rec_weights(img_ori)
+        rec_weight = compute_layer_weights(img_ori)
+        img_rec = self.decode_first_stage(x_rec)
+        loss_seg = self.loss_seg_func(img_rec, img_ori, rec_weight) * 0.3
+        loss += loss_seg
 
         loss_dict.update({f'{prefix}/loss_simple': loss_simple.detach()})
-        
-        if getattr(self, 'training_stage', None) == 'unet':
-            loss_dict.update({f'{prefix}/loss_vlb': loss_vlb.detach()})
-
-        if cond is not None:
-            loss_dict.update({f'{prefix}/loss_seg': loss_seg.detach()})
-
+        loss_dict.update({f'{prefix}/loss_vlb': loss_vlb.detach()})
+        loss_dict.update({f'{prefix}/loss_seg': loss_seg.detach()})
         loss_dict.update({f'{prefix}/loss': loss.detach()})
 
         return loss, loss_dict
@@ -897,12 +829,6 @@ class LatentDiffusion(DDPM):
                 sigma_min ** (1 / rho) - self.sigma_max ** (1 / rho))) ** rho
         t_steps = torch.cat([t_steps, torch.zeros_like(t_steps[:1])])
         time_steps = -torch.diff(t_steps)
-        # step = 1. / self.sampling_timesteps
-        # time_steps = torch.tensor([step], device=device).repeat(self.sampling_timesteps)
-        # if denoise:
-        #     eps = self.eps
-        #     time_steps = torch.cat((time_steps[:-1], torch.tensor([time_steps[-1] - eps], device=device), \
-        #                             torch.tensor([eps], device=device)), dim=0)
 
         if self.start_dist == 'normal':
             img = torch.randn(shape, device=device)
@@ -918,75 +844,35 @@ class LatentDiffusion(DDPM):
             if i == time_steps.shape[0] - 1:
                 s = cur_time
             C, noise = model_fn(img, cur_time)
-            if self.scale_by_softsign:
-                # correct the C for softsign
-                x0 = self.pred_x0_from_xt(img, noise, C, cur_time)
-                x0 = torch.clamp(x0, min=-0.987654321, max=0.987654321)
-                C = -x0
+
             # correct C
             x0 = self.pred_x0_from_xt(img, noise, C, cur_time)
             C = -1 * x0
             img = self.pred_xtms_from_xt(img, noise, C, cur_time, s)
             # img = self.pred_xtms_from_xt2(img, noise, C, cur_time, s)
             cur_time = cur_time - s
-        if self.scale_by_softsign:
-            img.clamp_(-0.987654321, 0.987654321)
 
         return img
 
     @torch.no_grad()
     def sample_fn_d(self, shape, cond=None, denoise=False):
         batch, device, sampling_timesteps = shape[0], self.eps.device, self.sampling_timesteps
-        step = 1. / self.sampling_timesteps
+
         sigma_min = self.sigma_min ** 2
-        # sigma_min = step
         rho = 1.
         step_indices = torch.arange(sampling_timesteps, dtype=torch.float64, device=device)
-        # t_steps = ((self.sigma_max ** 2) ** (1 / rho) + step_indices / (sampling_timesteps) * \
-        #            ((self.sigma_min ** 2) ** (1 / rho) - (self.sigma_max ** 2) ** (1 / rho))) ** rho
-        # t_steps = (self.sigma_max ** (1 / rho) + step_indices / (sampling_timesteps - 1) * (
-        #             self.sigma_min ** (1 / rho) - self.sigma_max ** (1 / rho))) ** rho
         t_steps = (self.sigma_max ** (1 / rho) + step_indices / (sampling_timesteps - 1) * (
                 sigma_min - self.sigma_max ** (1 / rho))) ** rho
         t_steps = torch.cat([t_steps, torch.zeros_like(t_steps[:1])])
-        # time_steps = -torch.diff(t_steps)
-        alpha = 1
-        # time_steps = torch.tensor([step], dtype=torch.float64, device=device).repeat(self.sampling_timesteps)
-        # if denoise:
-        #     eps = self.eps
-        #     time_steps = torch.cat((time_steps[:-1], torch.tensor([time_steps[-1] - eps], device=device), \
-        #                             torch.tensor([eps], dtype=torch.float64, device=device)), dim=0)
-
         x_next = torch.randn(shape, device=device, dtype=torch.float64) * t_steps[0]
-        # img = F.interpolate(img, scale_factor=up_scale, mode='bilinear', align_corners=True)
-        # cur_time = torch.ones((batch,), device=device)
         for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])):
-            # t_cur = torch.full((batch,), t_c, device=device)
-            # t_next = torch.full((batch,), t_n, device=device)  # 0, ..., N-1
             x_cur = x_next
-            # if cond is not None:
-            #     pred = self.apply_model(x_cur, t_cur, cond)
-            # else:
-            #     pred = self.model(x_cur, t_cur)
             C, noise = self.apply_model(x_cur, t_cur, cond)
             C, noise = C.to(torch.float64), noise.to(torch.float64)
             # x0 = x_cur - C * t_cur - noise * t_cur.sqrt()
             d_cur = C + noise / (t_cur.sqrt() + t_next.sqrt())
             x_next = x_cur + (t_next - t_cur) * d_cur
-            # x_next = x0 + t_next * C + t_next.sqrt() * noise
-            # x0 = self.pred_x0_from_xt(x_cur, noise, C, t_cur)
-            # d_cur = C + noise / t_cur.sqrt()
 
-            # Apply 2-order correction.
-            # if i < sampling_timesteps - 1:
-            #     if cond is not None:
-            #         pred = self.model(x_next, t_next, cond)
-            #     else:
-            #         pred = self.model(x_next, t_next)
-            #     C_, noise_ = pred[:2]
-            #     C_, noise_ = C_.to(torch.float64), noise_.to(torch.float64)
-            #     d_next = C_ + noise_ / (t_next.sqrt() + t_next.sqrt())
-            #     x_next = x_cur + (t_next - t_cur) * (0.5 * d_cur + 0.5 * d_next)
         img = x_next
 
         return img
