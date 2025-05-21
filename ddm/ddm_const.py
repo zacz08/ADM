@@ -533,7 +533,7 @@ class LatentDiffusion(DDPM):
         if self.scale_by_softsign:
             self.scale_by_std = False
             print('### USING SOFTSIGN RESCALING')
-        assert (self.scale_by_std and self.scale_by_softsign) is False;
+        assert (self.scale_by_std and self.scale_by_softsign) is False
 
         # self.input_keys = input_keys
         self.clip_denoised = False
@@ -860,7 +860,7 @@ class LatentDiffusion(DDPM):
         return loss, loss_dic
 
     @torch.no_grad()
-    def sample(self, batch_size=16, up_scale=1, cond=None, mask=None, denoise=True):
+    def sample(self, batch_size=16, cond=None, denoise=True):
         image_size, channels = self.image_size, self.channels
         # if cond is not None:
         #     batch_size = cond.shape[0]
@@ -868,28 +868,24 @@ class LatentDiffusion(DDPM):
         # down_ratio = self.first_stage_model.down_ratio
         self.sample_type = self.cfg.get('sample_type', 'deterministic')
         if self.sample_type == 'deterministic':
-            z = self.sample_fn_d((batch_size, channels, image_size[0]//down_ratio, image_size[1]//down_ratio),
-                           up_scale=up_scale, unnormalize=False, cond=cond, denoise=denoise)
+            z = self.sample_fn_d((batch_size, channels, image_size[0]//down_ratio, 
+                                  image_size[1]//down_ratio), cond=cond, denoise=denoise)
         elif self.sample_type == 'stochastic':
-            z = self.sample_fn_s((batch_size, channels, image_size[0]//down_ratio, image_size[1]//down_ratio),
-                           up_scale=up_scale, unnormalize=False, cond=cond, denoise=denoise)
+            z = self.sample_fn_s((batch_size, channels, image_size[0]//down_ratio, 
+                                  image_size[1]//down_ratio), cond=cond, denoise=denoise)
 
         # if self.scale_by_std:
         #     z = 1. / self.scale_factor * z.detach()
         # elif self.scale_by_softsign:
         #     z = z / (1 - z.abs())
         #     z = z.detach()
-        #print(z.shape)
-        # x_rec = self.first_stage_model.decode(z.to(torch.float32))
+
         x_rec = self.decode_first_stage(z.to(torch.float32))
-        # x_rec = unnormalize_to_zero_to_one(x_rec)
-        # x_rec = torch.clamp(x_rec, min=0., max=1.)
-        if mask is not None:
-            x_rec = mask * unnormalize_to_zero_to_one(cond) + (1 - mask) * x_rec
+
         return x_rec
 
     @torch.no_grad()
-    def sample_fn_s(self, shape, up_scale=1, unnormalize=True, cond=None, denoise=False):
+    def sample_fn_s(self, shape, cond=None, denoise=False):
         batch, device, sampling_timesteps = shape[0], self.eps.device, self.sampling_timesteps
         rho = 1
         step = 1. / self.sampling_timesteps
@@ -914,19 +910,14 @@ class LatentDiffusion(DDPM):
             img = 2 * torch.rand(shape, device=device) - 1.
         else:
             raise NotImplementedError(f'{self.start_dist} is not supported !')
-        img = F.interpolate(img, scale_factor=up_scale, mode='bilinear', align_corners=True)
         # K = -1 * torch.ones_like(img)
         cur_time = torch.ones((batch,), device=device)
+        model_fn = lambda img, t: self.apply_model(img, t, cond) if cond is not None else self.apply_model(img, t)
         for i, time_step in enumerate(time_steps):
             s = torch.full((batch,), time_step, device=device)
             if i == time_steps.shape[0] - 1:
                 s = cur_time
-            if cond is not None:
-                pred = self.model(img, cur_time, cond)
-            else:
-                pred = self.model(img, cur_time)
-            # C, noise = pred.chunk(2, dim=1)
-            C, noise = pred[:2]
+            C, noise = model_fn(img, cur_time)
             if self.scale_by_softsign:
                 # correct the C for softsign
                 x0 = self.pred_x0_from_xt(img, noise, C, cur_time)
@@ -940,12 +931,11 @@ class LatentDiffusion(DDPM):
             cur_time = cur_time - s
         if self.scale_by_softsign:
             img.clamp_(-0.987654321, 0.987654321)
-        if unnormalize:
-            img = unnormalize_to_zero_to_one(img)
+
         return img
 
     @torch.no_grad()
-    def sample_fn_d(self, shape, up_scale=1, unnormalize=True, cond=None, denoise=False):
+    def sample_fn_d(self, shape, cond=None, denoise=False):
         batch, device, sampling_timesteps = shape[0], self.eps.device, self.sampling_timesteps
         step = 1. / self.sampling_timesteps
         sigma_min = self.sigma_min ** 2
@@ -998,8 +988,7 @@ class LatentDiffusion(DDPM):
             #     d_next = C_ + noise_ / (t_next.sqrt() + t_next.sqrt())
             #     x_next = x_cur + (t_next - t_cur) * (0.5 * d_cur + 0.5 * d_next)
         img = x_next
-        if unnormalize:
-            img = unnormalize_to_zero_to_one(img)
+
         return img
     
 
