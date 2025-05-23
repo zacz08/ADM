@@ -566,7 +566,7 @@ class LatentDiffusion(DDPM):
         warmup_steps = int(0.05 * total_steps)
 
         optimizer = torch.optim.AdamW(
-            filter(lambda p: p.requires_grad, self.parameters()),
+            filter(lambda p: p.requires_grad, self.get_optim_params()),
             lr=base_lr,
             weight_decay=weight_decay
         )
@@ -595,6 +595,10 @@ class LatentDiffusion(DDPM):
                 "name": "warmup_cosine"
             }
         }
+    
+
+    def get_optim_params(self):
+        return self.parameters()
 
 
     @torch.no_grad()
