@@ -891,11 +891,14 @@ class LatentDiffusion(DDPM):
         N = min(z.shape[0], N)
         n_row = min(z.shape[0], n_row)
 
+        if kwargs.get("split", False) == 'predict':
+            log["samples"] = self.sample(batch_size=N)
+            return log
+
         log["recon_sd_input"] = self.decode_first_stage(z)    
 
         if sample:
             samples = self.sample(batch_size=N)
-            # x_samples = self.decode_first_stage(samples)
             log["samples"] = samples
             # log["samples"] = self.render_stp3_prediction(x_samples) # decode with stp3 decoder
         return log
