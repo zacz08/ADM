@@ -239,11 +239,14 @@ class DDPM(pl.LightningModule):
 
         if self.trainer and self.trainer.world_size > 1:
             sampler = DistributedSampler(dataset, num_replicas=self.trainer.world_size, rank=self.trainer.global_rank, shuffle=False)
+            shuffle = False
         else:
             sampler = None
+            shuffle = True
         
         return DataLoader(dataset, 
                           batch_size=self.data_cfg['batch_size'], 
+                          shuffle=shuffle, 
                           sampler=sampler)
     
     def get_input(self, batch, k):
@@ -617,7 +620,8 @@ class LatentDiffusion(DDPM):
             "val/loss_vlb",
             "val/loss_seg",
             "val/loss_c",
-            "val/loss_o"
+            "val/loss_o",
+            "val/IoU",
         ]
 
         row = {"epoch": epoch}
