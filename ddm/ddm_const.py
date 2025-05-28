@@ -11,7 +11,6 @@ from ldm.modules.distributions.distributions import DiagonalGaussianDistribution
 from .augment import AugmentPipe
 from ldm.util import instantiate_from_config
 from ldm.modules.ema import LitEma
-from ldm.models.autoencoder_retrain import compute_rec_weights
 from cldm.loss import compute_layer_weights
 import pytorch_lightning as pl
 from cldm.loss import SegmentationLoss
