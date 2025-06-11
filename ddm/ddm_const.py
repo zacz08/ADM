@@ -657,8 +657,8 @@ class LatentDiffusion(DDPM):
             if bs is not None:
                 ref = ref[:bs]
             ref = ref.to(self.device)
-            encoder_posterior = self.first_stage_model.encode(ref)
-            ref = self.get_first_stage_encoding(encoder_posterior)
+            # encoder_posterior = self.first_stage_model.encode(ref)
+            # ref = self.get_first_stage_encoding(encoder_posterior)
         else:
             ref = x
 
