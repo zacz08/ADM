@@ -217,7 +217,8 @@ class DDPM(pl.LightningModule):
         dataset = nuScenesSegDataset(data_split=self.data_cfg['data_split_train'], 
                                      resolution=self.data_cfg['resolution'],
                                      augment=self.data_cfg['augment'],
-                                     return_feature=return_feature)
+                                     return_feature=return_feature,
+                                     model=self.data_cfg['model'])
         
         if self.trainer and self.trainer.world_size > 1:
             sampler = DistributedSampler(dataset, num_replicas=self.trainer.world_size, rank=self.trainer.global_rank, shuffle=True)
@@ -235,7 +236,8 @@ class DDPM(pl.LightningModule):
     def val_dataloader(self, return_feature=False):
         dataset = nuScenesSegDataset(data_split=self.data_cfg['data_split_val'],
                                      resolution=self.data_cfg['resolution'],
-                                     return_feature=return_feature)
+                                     return_feature=return_feature,
+                                     model=self.data_cfg['model'])
 
         if self.trainer and self.trainer.world_size > 1:
             sampler = DistributedSampler(dataset, num_replicas=self.trainer.world_size, rank=self.trainer.global_rank, shuffle=False)
