@@ -155,7 +155,7 @@ class DDPM(pl.LightningModule):
 
         # sampling related parameters
 
-        self.sampling_timesteps = default(sampling_timesteps, 10)
+        self.sampling_timesteps = default(sampling_timesteps, 2)
 
         # helper function to register buffer from float64 to float32
 
@@ -231,7 +231,8 @@ class DDPM(pl.LightningModule):
                           batch_size=self.data_cfg['batch_size'], 
                           shuffle=shuffle, 
                           sampler=sampler,
-                          num_workers=self.data_cfg['num_workers'])
+                          num_workers=self.data_cfg['num_workers'],
+                          persistent_workers=True)
     
     def val_dataloader(self, return_feature=False):
         dataset = nuScenesSegDataset(data_split=self.data_cfg['data_split_val'],
@@ -248,7 +249,7 @@ class DDPM(pl.LightningModule):
         
         return DataLoader(dataset, 
                           batch_size=self.data_cfg['batch_size'], 
-                          shuffle=shuffle, 
+                          shuffle=False, 
                           sampler=sampler)
     
     def get_input(self, batch, k):
@@ -496,7 +497,7 @@ class LatentDiffusion(DDPM):
                  scale_factor=1.0,
                  scale_by_std=True,
                  scale_by_softsign=False,
-                 sample_type='deterministic',
+                #  sample_type='deterministic',
                  default_scale=False,
                  *args,
                  **kwargs
