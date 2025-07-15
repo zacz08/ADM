@@ -155,7 +155,7 @@ class DDPM(pl.LightningModule):
 
         # sampling related parameters
 
-        self.sampling_timesteps = default(sampling_timesteps, 2)
+        self.sampling_timesteps = default(sampling_timesteps, 10)
 
         # helper function to register buffer from float64 to float32
 
